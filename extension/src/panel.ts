@@ -95,6 +95,26 @@ const el: PanelElements = {
   playerSelect: document.querySelector<HTMLSelectElement>("#playerSelect")!,
 };
 
+
+function removeDuplicateSelectorNodes(selector: string) {
+  const nodes = Array.from(document.querySelectorAll(selector));
+  if (nodes.length <= 1) {
+    return;
+  }
+
+  for (const node of nodes.slice(1)) {
+    const container = node.closest("label") ?? node;
+    container.remove();
+  }
+
+  log("warn", `removed duplicated selector nodes for ${selector}`);
+}
+
+function dedupePlayerSelectors() {
+  removeDuplicateSelectorNodes("#playerMode");
+  removeDuplicateSelectorNodes("#playerSelect");
+}
+
 function formatTs(value: number | null): string {
   if (!value) return "-";
   return new Date(value).toLocaleString();
@@ -717,6 +737,7 @@ function addLifecycleLogs() {
 }
 
 async function boot() {
+  dedupePlayerSelectors();
   bindPanelUiEvents();
   renderPanel();
   log("info", "panel boot start");

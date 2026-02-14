@@ -9,7 +9,6 @@
     <main>
       <h1>Crostini MPRIS Bridge</h1>
       <section>
-        <div>Health: <span id="health">idle</span></div>
         <label>
           Base URL
           <input id="baseUrl" type="text" placeholder="http://penguin.linux.test:5167" />
@@ -19,19 +18,6 @@
           <button id="ping">测试 /healthz</button>
           <button id="openPanel">打开媒体同步窗口</button>
         </div>
-      </section>
-
-      <section>
-        <h2>状态</h2>
-        <div id="status" class="panel">暂无状态</div>
-      </section>
-
-      <section>
-        <div class="row between">
-          <h2>日志</h2>
-          <button id="clearLogs">清空</button>
-        </div>
-        <pre id="logs" class="panel">(no logs)</pre>
       </section>
     </main>
     <script type="module" src="popup.js"></script>
