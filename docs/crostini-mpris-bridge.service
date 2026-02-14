@@ -7,7 +7,7 @@ Type=simple
 ExecStart=%h/.local/bin/crostini-mpris-bridge
 Restart=on-failure
 RestartSec=2
-Environment=BIND_ADDR=0.0.0.0:5000
+Environment=BIND_ADDR=0.0.0.0:5167
 Environment=POLL_INTERVAL_MS=500
 
 [Install]
