@@ -1,0 +1,12 @@
+{
+  "name": "crostini-mpris-extension",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "bun run scripts/build.ts",
+    "dev": "bun run scripts/build.ts --watch"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.307"
+  }
+}
