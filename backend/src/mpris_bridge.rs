@@ -126,7 +126,9 @@ fn player_to_state(player: &Player) -> BridgeState {
         .as_ref()
         .and_then(|m| m.art_url())
         .map(|url| url.to_string());
-    let art_proxy_url = art_url.as_ref().map(|value| build_art_proxy_path(value));
+    let art_proxy_url = art_url
+        .as_ref()
+        .and_then(|value| build_art_proxy_path(value));
 
     let artist = metadata
         .as_ref()
@@ -212,7 +214,11 @@ fn is_expected_absence_error(err: &anyhow::Error) -> bool {
         || message.contains("org.freedesktop.dbus.error.namehasnoowner")
 }
 
-fn build_art_proxy_path(src: &str) -> String {
+fn build_art_proxy_path(src: &str) -> Option<String> {
+    if !src.starts_with("file://") {
+        return None;
+    }
+
     let encoded = form_urlencoded::byte_serialize(src.as_bytes()).collect::<String>();
-    format!("/art?src={encoded}")
+    Some(format!("/art?src={encoded}"))
 }
