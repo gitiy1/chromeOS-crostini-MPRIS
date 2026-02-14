@@ -18,14 +18,15 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::info;
 
 use crate::{
-    model::{BridgeState, ControlAction},
+    model::{BridgeState, ControlAction, PlayerSelection, PlayerSelectionMode},
     mpris_bridge::{perform_action, run_poll_loop},
-    state::SharedState,
+    state::{SharedSelection, SharedState},
 };
 
 #[derive(Clone)]
 struct AppState {
     shared: SharedState,
+    selection: SharedSelection,
 }
 
 #[tokio::main]
@@ -45,12 +46,15 @@ async fn main() {
         .unwrap_or(500);
 
     let shared = SharedState::new();
+    let selection = SharedSelection::new();
     let app_state = AppState {
         shared: shared.clone(),
+        selection: selection.clone(),
     };
 
     tokio::spawn(run_poll_loop(
         shared,
+        selection,
         Duration::from_millis(interval_ms.max(200)),
     ));
 
@@ -65,6 +69,7 @@ async fn main() {
         .route("/events", get(sse_events))
         .route("/control/:action", post(control))
         .route("/control/seek", post(control_seek))
+        .route("/player-selection", post(update_player_selection))
         .route("/art", get(proxy_art))
         .with_state(app_state)
         .layer(middleware::from_fn(pna_middleware))
@@ -102,7 +107,7 @@ async fn sse_events(
     Sse::new(init_event.chain(updates))
 }
 
-async fn control(Path(action): Path<String>) -> impl IntoResponse {
+async fn control(State(state): State<AppState>, Path(action): Path<String>) -> impl IntoResponse {
     let action = match action.as_str() {
         "play" => ControlAction::Play,
         "pause" => ControlAction::Pause,
@@ -113,12 +118,11 @@ async fn control(Path(action): Path<String>) -> impl IntoResponse {
         _ => return (StatusCode::BAD_REQUEST, "unknown action").into_response(),
     };
 
-    match perform_action(action) {
+    match perform_action(action, &state.selection).await {
         Ok(_) => (StatusCode::OK, "ok").into_response(),
         Err(err) => (StatusCode::BAD_GATEWAY, err.to_string()).into_response(),
     }
 }
-
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -127,7 +131,10 @@ struct SeekQuery {
     offset_us: Option<i64>,
 }
 
-async fn control_seek(Query(query): Query<SeekQuery>) -> impl IntoResponse {
+async fn control_seek(
+    State(state): State<AppState>,
+    Query(query): Query<SeekQuery>,
+) -> impl IntoResponse {
     let action = if let Some(position_us) = query.position_us {
         ControlAction::SeekTo(position_us)
     } else if let Some(offset_us) = query.offset_us {
@@ -136,10 +143,39 @@ async fn control_seek(Query(query): Query<SeekQuery>) -> impl IntoResponse {
         return (StatusCode::BAD_REQUEST, "missing positionUs or offsetUs").into_response();
     };
 
-    match perform_action(action) {
+    match perform_action(action, &state.selection).await {
         Ok(_) => (StatusCode::OK, "ok").into_response(),
         Err(err) => (StatusCode::BAD_GATEWAY, err.to_string()).into_response(),
     }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PlayerSelectionRequest {
+    mode: Option<PlayerSelectionMode>,
+    selected_player_bus_name: Option<String>,
+}
+
+async fn update_player_selection(
+    State(state): State<AppState>,
+    Json(payload): Json<PlayerSelectionRequest>,
+) -> impl IntoResponse {
+    let mode = payload.mode.unwrap_or(PlayerSelectionMode::Auto);
+    let selected_player_bus_name = payload.selected_player_bus_name.and_then(|value| {
+        if value.trim().is_empty() {
+            None
+        } else {
+            Some(value)
+        }
+    });
+
+    let next = PlayerSelection {
+        mode,
+        selected_player_bus_name,
+    };
+
+    state.selection.update(next).await;
+    (StatusCode::OK, "ok")
 }
 
 #[derive(Deserialize)]
