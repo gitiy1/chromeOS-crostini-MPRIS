@@ -14,6 +14,7 @@ interface BridgeState {
   canGoPrevious: boolean;
   canPlay: boolean;
   canPause: boolean;
+  canSeek: boolean;
 }
 
 type BridgeHealth = "idle" | "connecting" | "connected" | "error";
@@ -39,6 +40,8 @@ const BRIDGE_LOGS_KEY = "bridgeLogs";
 const LOG_LIMIT = 200;
 const KEEPALIVE_FREQUENCY = 220;
 const KEEPALIVE_GAIN = 0.00001;
+const POSITION_SYNC_INTERVAL_MS = 1000;
+const DEFAULT_SEEK_OFFSET_SECONDS = 10;
 
 let currentBaseUrl = DEFAULT_BASE_URL;
 let eventSource: EventSource | null = null;
@@ -51,36 +54,9 @@ let bridgeDebug: BridgeDebugState = {
   lastState: null,
 };
 let bridgeLogs: LogRecord[] = [];
-
 let keepaliveAudioContext: AudioContext | null = null;
-
-async function ensureKeepaliveAudio() {
-  if (typeof AudioContext === "undefined") {
-    log("warn", "AudioContext unavailable; keepalive audio cannot start");
-    return;
-  }
-
-  if (!keepaliveAudioContext) {
-    keepaliveAudioContext = new AudioContext();
-    const oscillator = keepaliveAudioContext.createOscillator();
-    const gainNode = keepaliveAudioContext.createGain();
-
-    oscillator.type = "sine";
-    oscillator.frequency.value = KEEPALIVE_FREQUENCY;
-    gainNode.gain.value = KEEPALIVE_GAIN;
-
-    oscillator.connect(gainNode);
-    gainNode.connect(keepaliveAudioContext.destination);
-    oscillator.start();
-  }
-
-  if (keepaliveAudioContext.state === "suspended") {
-    await keepaliveAudioContext.resume().catch((error) => {
-      log("warn", `failed to resume keepalive audio context: ${String(error)}`);
-      return undefined;
-    });
-  }
-}
+let latestState: BridgeState | null = null;
+let latestStateAtMs = 0;
 
 function hasStorageApi(): boolean {
   return typeof chrome !== "undefined" && !!chrome.storage?.local;
@@ -197,6 +173,34 @@ async function loadDebugData() {
   await saveLogs();
 }
 
+async function ensureKeepaliveAudio() {
+  if (typeof AudioContext === "undefined") {
+    log("warn", "AudioContext unavailable; keepalive audio cannot start");
+    return;
+  }
+
+  if (!keepaliveAudioContext) {
+    keepaliveAudioContext = new AudioContext();
+    const oscillator = keepaliveAudioContext.createOscillator();
+    const gainNode = keepaliveAudioContext.createGain();
+
+    oscillator.type = "sine";
+    oscillator.frequency.value = KEEPALIVE_FREQUENCY;
+    gainNode.gain.value = KEEPALIVE_GAIN;
+
+    oscillator.connect(gainNode);
+    gainNode.connect(keepaliveAudioContext.destination);
+    oscillator.start();
+  }
+
+  if (keepaliveAudioContext.state === "suspended") {
+    await keepaliveAudioContext.resume().catch((error) => {
+      log("warn", `failed to resume keepalive audio context: ${String(error)}`);
+      return undefined;
+    });
+  }
+}
+
 function setPlaybackState(state: PlaybackStatus) {
   if (!("mediaSession" in navigator)) return;
   navigator.mediaSession.playbackState = state;
@@ -225,17 +229,33 @@ function setMetadata(state: BridgeState) {
   });
 }
 
+function getProjectedState(): BridgeState | null {
+  if (!latestState) return null;
+  if (latestState.playbackStatus !== "playing") return latestState;
+
+  const elapsedUs = Math.max(0, (Date.now() - latestStateAtMs) * 1000);
+  const projectedPositionUs = latestState.positionUs + elapsedUs * Math.max(latestState.playbackRate, 0.1);
+  const maxDurationUs = latestState.durationUs ?? projectedPositionUs;
+
+  return {
+    ...latestState,
+    positionUs: Math.min(projectedPositionUs, maxDurationUs),
+  };
+}
+
 function updatePosition(state: BridgeState) {
   if (!("mediaSession" in navigator) || !("setPositionState" in navigator.mediaSession)) return;
+
   const duration = Math.max((state.durationUs ?? 0) / 1_000_000, 0);
   const position = Math.max(state.positionUs / 1_000_000, 0);
 
   try {
     if (duration > 0) {
-      const payload: MediaPositionState = { duration, position: Math.min(position, duration) };
-      if (state.playbackStatus === "playing") {
-        payload.playbackRate = Math.max(state.playbackRate, 0.1);
-      }
+      const payload: MediaPositionState = {
+        duration,
+        position: Math.min(position, duration),
+        playbackRate: state.playbackStatus === "playing" ? Math.max(state.playbackRate, 0.1) : 0,
+      };
       navigator.mediaSession.setPositionState(payload);
     }
   } catch (error) {
@@ -243,9 +263,33 @@ function updatePosition(state: BridgeState) {
   }
 }
 
+function startPositionSyncLoop() {
+  setInterval(() => {
+    const projected = getProjectedState();
+    if (!projected) return;
+    updatePosition(projected);
+  }, POSITION_SYNC_INTERVAL_MS);
+}
+
 async function sendControl(action: string) {
   await fetch(`${currentBaseUrl}/control/${action}`, { method: "POST", mode: "cors" });
   log("info", `sent control action: ${action}`);
+}
+
+async function sendSeekTo(positionUs: number) {
+  await fetch(`${currentBaseUrl}/control/seek?positionUs=${Math.max(0, Math.floor(positionUs))}`, {
+    method: "POST",
+    mode: "cors",
+  });
+  log("info", `sent control seekTo: ${Math.floor(positionUs)}us`);
+}
+
+async function sendSeekBy(offsetUs: number) {
+  await fetch(`${currentBaseUrl}/control/seek?offsetUs=${Math.floor(offsetUs)}`, {
+    method: "POST",
+    mode: "cors",
+  });
+  log("info", `sent control seekBy: ${Math.floor(offsetUs)}us`);
 }
 
 function resolvePlayPauseCommand(action: "play" | "pause"): "play" | "pause" {
@@ -261,6 +305,14 @@ function resolvePlayPauseCommand(action: "play" | "pause"): "play" | "pause" {
 
 function registerActionHandlers() {
   if (!("mediaSession" in navigator)) return;
+
+  const setHandler = <A extends MediaSessionAction>(action: A, handler: MediaSessionActionHandler | null) => {
+    try {
+      navigator.mediaSession.setActionHandler(action, handler);
+    } catch {
+      log("warn", `action handler not supported: ${action}`);
+    }
+  };
 
   const sendMapped = (action: MediaSessionAction) => {
     let command: string;
@@ -284,13 +336,48 @@ function registerActionHandlers() {
   };
 
   for (const action of ["play", "pause", "previoustrack", "nexttrack", "stop"] as const) {
-    navigator.mediaSession.setActionHandler(action, () => {
+    setHandler(action, () => {
       sendMapped(action);
     });
   }
+
+  setHandler("seekbackward", (details) => {
+    const offsetSeconds = details.seekOffset ?? DEFAULT_SEEK_OFFSET_SECONDS;
+    void sendSeekBy(-offsetSeconds * 1_000_000).catch((error) => {
+      void setHealth("error", `seekbackward failed: ${String(error)}`);
+      log("error", `seekbackward failed: ${String(error)}`);
+    });
+  });
+
+  setHandler("seekforward", (details) => {
+    const offsetSeconds = details.seekOffset ?? DEFAULT_SEEK_OFFSET_SECONDS;
+    void sendSeekBy(offsetSeconds * 1_000_000).catch((error) => {
+      void setHealth("error", `seekforward failed: ${String(error)}`);
+      log("error", `seekforward failed: ${String(error)}`);
+    });
+  });
+
+  setHandler("seekto", (details) => {
+    if (typeof details.seekTime !== "number") return;
+
+    const targetUs = details.seekTime * 1_000_000;
+    if (latestState) {
+      latestState = { ...latestState, positionUs: Math.max(0, Math.floor(targetUs)) };
+      latestStateAtMs = Date.now();
+      updatePosition(latestState);
+    }
+
+    void sendSeekTo(targetUs).catch((error) => {
+      void setHealth("error", `seekto failed: ${String(error)}`);
+      log("error", `seekto failed: ${String(error)}`);
+    });
+  });
 }
 
 async function applyState(state: BridgeState) {
+  latestState = state;
+  latestStateAtMs = Date.now();
+
   setMetadata(state);
   updatePosition(state);
 
@@ -341,11 +428,11 @@ function connectEvents() {
 function addLifecycleLogs() {
   window.addEventListener("pagehide", () => {
     log("warn", "panel pagehide fired");
-      });
+  });
 
   window.addEventListener("beforeunload", () => {
     log("warn", "panel beforeunload fired");
-      });
+  });
 
   document.addEventListener("visibilitychange", () => {
     log("info", `panel visibility=${document.visibilityState}`);
@@ -358,6 +445,7 @@ async function boot() {
   log("info", "keepalive audio initialized via AudioContext oscillator");
 
   addLifecycleLogs();
+  startPositionSyncLoop();
   await loadDebugData();
   registerActionHandlers();
   connectEvents();
