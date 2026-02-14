@@ -348,13 +348,20 @@ function connectEvents() {
   };
 }
 
+function notifyOffscreenUnloading(source: string) {
+  if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) return;
+  void chrome.runtime.sendMessage({ type: "bridge:offscreen-unloading", source }).catch(() => undefined);
+}
+
 function addLifecycleLogs() {
   window.addEventListener("pagehide", () => {
     log("warn", "offscreen pagehide fired");
+    notifyOffscreenUnloading("pagehide");
   });
 
   window.addEventListener("beforeunload", () => {
     log("warn", "offscreen beforeunload fired");
+    notifyOffscreenUnloading("beforeunload");
   });
 
   document.addEventListener("visibilitychange", () => {
