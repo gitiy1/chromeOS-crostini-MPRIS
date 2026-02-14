@@ -58,11 +58,106 @@ audio.volume = 0;
 let focusAudioReady = false;
 let audioContext: AudioContext | null = null;
 
+function hasStorageApi(): boolean {
+  return typeof chrome !== "undefined" && !!chrome.storage?.local;
+}
+
+function pushLocalLog(item: LogRecord) {
+  bridgeLogs = [...bridgeLogs, item].slice(-LOG_LIMIT);
+}
+
+function syncLogToBackground(item: LogRecord) {
+  if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) return;
+  void chrome.runtime.sendMessage({ type: "bridge:append-log", payload: item }).catch(() => undefined);
+}
+
+function syncDebugToBackground() {
+  if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) return;
+  void chrome.runtime.sendMessage({ type: "bridge:update-debug", payload: bridgeDebug }).catch(() => undefined);
+}
+
+async function saveDebugState() {
+  syncDebugToBackground();
+  if (!hasStorageApi()) return;
+  try {
+    await chrome.storage.local.set({ [BRIDGE_DEBUG_KEY]: bridgeDebug });
+  } catch {
+    // ignore, background relay still keeps logs/debug alive.
+  }
+}
+
+async function saveLogs() {
+  if (!hasStorageApi()) return;
+  try {
+    await chrome.storage.local.set({ [BRIDGE_LOGS_KEY]: bridgeLogs });
+  } catch {
+    // ignore, background relay still keeps logs/debug alive.
+  }
+}
+
+function log(level: LogRecord["level"], message: string) {
+  const item: LogRecord = { at: Date.now(), level, message };
+  pushLocalLog(item);
+  syncLogToBackground(item);
+
+  if (level === "error") {
+    console.error(`[bridge] ${message}`);
+  } else if (level === "warn") {
+    console.warn(`[bridge] ${message}`);
+  } else {
+    console.info(`[bridge] ${message}`);
+  }
+
+  void saveLogs();
+}
+
+async function setHealth(health: BridgeHealth, error?: string) {
+  bridgeDebug = {
+    ...bridgeDebug,
+    baseUrl: currentBaseUrl,
+    health,
+    lastError: error ?? null,
+    lastUpdateAt: Date.now(),
+  };
+  await saveDebugState();
+}
+
+async function loadDebugData() {
+  if (!hasStorageApi()) {
+    log("warn", "chrome.storage.local unavailable in offscreen context");
+    return;
+  }
+
+  try {
+    const data = await chrome.storage.local.get(["baseUrl", BRIDGE_LOGS_KEY, BRIDGE_DEBUG_KEY]);
+    currentBaseUrl = data.baseUrl ?? DEFAULT_BASE_URL;
+
+    const loadedLogs = data[BRIDGE_LOGS_KEY];
+    if (Array.isArray(loadedLogs)) {
+      bridgeLogs = loadedLogs.slice(-LOG_LIMIT);
+    }
+
+    const loadedDebug = data[BRIDGE_DEBUG_KEY];
+    if (loadedDebug && typeof loadedDebug === "object") {
+      bridgeDebug = {
+        ...bridgeDebug,
+        ...loadedDebug,
+        baseUrl: currentBaseUrl,
+      };
+    }
+  } catch (error) {
+    log("warn", `loadDebugData failed: ${String(error)}`);
+  }
+
+  await saveDebugState();
+  await saveLogs();
+}
+
 async function initFocusAudio() {
   if (focusAudioReady) return;
 
   if (typeof AudioContext === "undefined") {
-    await log("warn", "AudioContext API unavailable; media controls may not appear reliably");
+    log("warn", "AudioContext API unavailable; media controls may not appear reliably");
     return;
   }
 
@@ -82,69 +177,7 @@ async function initFocusAudio() {
   oscillator.start();
 
   focusAudioReady = true;
-  await log("info", "focus audio initialized with WebAudio stream");
-}
-
-function hasStorageApi(): boolean {
-  return typeof chrome !== "undefined" && !!chrome.storage?.local;
-}
-
-async function saveDebugState() {
-  if (!hasStorageApi()) return;
-  await chrome.storage.local.set({ [BRIDGE_DEBUG_KEY]: bridgeDebug });
-}
-
-async function saveLogs() {
-  if (!hasStorageApi()) return;
-  await chrome.storage.local.set({ [BRIDGE_LOGS_KEY]: bridgeLogs });
-}
-
-async function log(level: LogRecord["level"], message: string) {
-  const item: LogRecord = { at: Date.now(), level, message };
-  bridgeLogs = [...bridgeLogs, item].slice(-LOG_LIMIT);
-  if (level === "error") {
-    console.error(`[bridge] ${message}`);
-  } else if (level === "warn") {
-    console.warn(`[bridge] ${message}`);
-  } else {
-    console.info(`[bridge] ${message}`);
-  }
-  await saveLogs();
-}
-
-async function setHealth(health: BridgeHealth, error?: string) {
-  bridgeDebug = {
-    ...bridgeDebug,
-    baseUrl: currentBaseUrl,
-    health,
-    lastError: error ?? null,
-    lastUpdateAt: Date.now(),
-  };
-  await saveDebugState();
-}
-
-async function loadDebugData() {
-  if (!hasStorageApi()) return;
-
-  const data = await chrome.storage.local.get(["baseUrl", BRIDGE_LOGS_KEY, BRIDGE_DEBUG_KEY]);
-  currentBaseUrl = data.baseUrl ?? DEFAULT_BASE_URL;
-
-  const loadedLogs = data[BRIDGE_LOGS_KEY];
-  if (Array.isArray(loadedLogs)) {
-    bridgeLogs = loadedLogs.slice(-LOG_LIMIT);
-  }
-
-  const loadedDebug = data[BRIDGE_DEBUG_KEY];
-  if (loadedDebug && typeof loadedDebug === "object") {
-    bridgeDebug = {
-      ...bridgeDebug,
-      ...loadedDebug,
-      baseUrl: currentBaseUrl,
-    };
-  }
-
-  await saveDebugState();
-  await saveLogs();
+  log("info", "focus audio initialized with WebAudio stream");
 }
 
 function setPlaybackState(state: PlaybackStatus) {
@@ -156,21 +189,16 @@ function toArtworkSrc(artUrl: string): string {
   if (artUrl.startsWith("http://") || artUrl.startsWith("https://")) {
     return artUrl;
   }
-
   if (artUrl.startsWith("file://")) {
     return `${currentBaseUrl}/art?src=${encodeURIComponent(artUrl)}`;
   }
-
-  // 未知协议保守处理：走后端，由后端决定是否接受。
   return `${currentBaseUrl}/art?src=${encodeURIComponent(artUrl)}`;
 }
 
 function setMetadata(state: BridgeState) {
   if (!("mediaSession" in navigator)) return;
 
-  const artwork = state.artUrl
-    ? [{ src: toArtworkSrc(state.artUrl), sizes: "512x512", type: "image/*" }]
-    : [];
+  const artwork = state.artUrl ? [{ src: toArtworkSrc(state.artUrl), sizes: "512x512", type: "image/*" }] : [];
 
   navigator.mediaSession.metadata = new MediaMetadata({
     title: state.title ?? "Crostini Linux",
@@ -187,30 +215,20 @@ function updatePosition(state: BridgeState) {
 
   try {
     if (duration > 0) {
-      const payload: MediaPositionState = {
-        duration,
-        position: Math.min(position, duration),
-      };
-
-      // MediaSession 不允许 playbackRate = 0。
-      // 暂停/停止时不传 playbackRate，让浏览器使用默认值并保持当前位置。
+      const payload: MediaPositionState = { duration, position: Math.min(position, duration) };
       if (state.playbackStatus === "playing") {
         payload.playbackRate = Math.max(state.playbackRate, 0.1);
       }
-
       navigator.mediaSession.setPositionState(payload);
     }
   } catch (error) {
-    void log("warn", `setPositionState failed: ${String(error)}`);
+    log("warn", `setPositionState failed: ${String(error)}`);
   }
 }
 
 async function sendControl(action: string) {
-  await fetch(`${currentBaseUrl}/control/${action}`, {
-    method: "POST",
-    mode: "cors",
-  });
-  await log("info", `sent control action: ${action}`);
+  await fetch(`${currentBaseUrl}/control/${action}`, { method: "POST", mode: "cors" });
+  log("info", `sent control action: ${action}`);
 }
 
 function registerActionHandlers() {
@@ -227,20 +245,14 @@ function registerActionHandlers() {
     navigator.mediaSession.setActionHandler(action as MediaSessionAction, () => {
       void sendControl(command).catch((error) => {
         void setHealth("error", `control failed: ${String(error)}`);
-        void log("error", `control action failed (${command}): ${String(error)}`);
+        log("error", `control action failed (${command}): ${String(error)}`);
       });
     });
   }
-
-  navigator.mediaSession.setActionHandler("seekto", (details) => {
-    if (typeof details.seekTime !== "number") return;
-    void log("info", `seek requested by UI: ${details.seekTime.toFixed(3)}s (not implemented yet)`);
-  });
 }
 
 async function ensureAudioFocus(active: boolean) {
   await initFocusAudio();
-
   if (!focusAudioReady) return;
 
   if (active) {
@@ -250,7 +262,7 @@ async function ensureAudioFocus(active: boolean) {
 
     if (audio.paused) {
       await audio.play().catch((error) => {
-        void log("warn", `failed to start focus audio: ${String(error)}`);
+        log("warn", `failed to start focus audio: ${String(error)}`);
         return undefined;
       });
     }
@@ -267,11 +279,7 @@ async function applyState(state: BridgeState) {
   updatePosition(state);
 
   const playbackState: PlaybackStatus =
-    state.playbackStatus === "playing"
-      ? "playing"
-      : state.playbackStatus === "paused"
-        ? "paused"
-        : "none";
+    state.playbackStatus === "playing" ? "playing" : state.playbackStatus === "paused" ? "paused" : "none";
 
   setPlaybackState(playbackState);
   await ensureAudioFocus(playbackState !== "none");
@@ -291,13 +299,13 @@ async function applyState(state: BridgeState) {
 function connectEvents() {
   eventSource?.close();
   void setHealth("connecting");
-  void log("info", `connecting to SSE: ${currentBaseUrl}/events`);
+  log("info", `connecting to SSE: ${currentBaseUrl}/events`);
 
   eventSource = new EventSource(`${currentBaseUrl}/events`);
 
   eventSource.addEventListener("open", () => {
     void setHealth("connected");
-    void log("info", "SSE connected");
+    log("info", "SSE connected");
   });
 
   eventSource.addEventListener("state", (event) => {
@@ -308,17 +316,33 @@ function connectEvents() {
   eventSource.onerror = (event) => {
     const detail = `SSE error (${event.type})`;
     void setHealth("error", detail);
-    void log("warn", detail);
+    log("warn", detail);
     eventSource?.close();
     setTimeout(connectEvents, 1500);
   };
 }
 
+function addLifecycleLogs() {
+  window.addEventListener("pagehide", () => {
+    log("warn", "offscreen pagehide fired");
+  });
+
+  window.addEventListener("beforeunload", () => {
+    log("warn", "offscreen beforeunload fired");
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    log("info", `offscreen visibility=${document.visibilityState}`);
+  });
+}
+
 async function boot() {
+  log("info", "offscreen boot start");
+  addLifecycleLogs();
   await loadDebugData();
   registerActionHandlers();
   connectEvents();
-  await log("info", "offscreen boot completed");
+  log("info", "offscreen boot completed");
 }
 
 if (typeof chrome !== "undefined" && chrome.storage?.onChanged) {
@@ -326,7 +350,7 @@ if (typeof chrome !== "undefined" && chrome.storage?.onChanged) {
     if (changes.baseUrl) {
       currentBaseUrl = changes.baseUrl.newValue ?? DEFAULT_BASE_URL;
       void setHealth("idle");
-      void log("info", `baseUrl updated: ${currentBaseUrl}`);
+      log("info", `baseUrl updated: ${currentBaseUrl}`);
       connectEvents();
     }
   });
@@ -334,5 +358,5 @@ if (typeof chrome !== "undefined" && chrome.storage?.onChanged) {
 
 void boot().catch((error) => {
   void setHealth("error", String(error));
-  void log("error", `offscreen boot failed: ${String(error)}`);
+  log("error", `offscreen boot failed: ${String(error)}`);
 });
