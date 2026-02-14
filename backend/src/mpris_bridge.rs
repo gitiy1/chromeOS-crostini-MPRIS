@@ -1,23 +1,37 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use url::form_urlencoded;
+
 use mpris::{PlaybackStatus as MprisPlaybackStatus, Player, PlayerFinder};
 use tokio::time;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::{
-    model::{BridgeState, ControlAction, PlaybackStatus},
-    state::SharedState,
+    model::{
+        BridgeState, ControlAction, PlaybackStatus, PlayerDescriptor, PlayerSelection,
+        PlayerSelectionMode,
+    },
+    state::{SharedSelection, SharedState},
 };
 
-pub async fn run_poll_loop(shared: SharedState, interval: Duration) {
+pub async fn run_poll_loop(shared: SharedState, selection: SharedSelection, interval: Duration) {
     let mut ticker = time::interval(interval);
     loop {
         ticker.tick().await;
-        match collect_state() {
+        let current_selection = selection.snapshot().await;
+        match collect_state(&current_selection) {
             Ok(state) => shared.update(state).await,
             Err(err) => {
-                warn!("failed to collect player state: {err}");
-                let mut empty = BridgeState::default();
+                if is_expected_absence_error(&err) {
+                    debug!("no active player yet: {err}");
+                } else {
+                    warn!("failed to collect player state: {err}");
+                }
+                let mut empty = BridgeState {
+                    selection_mode: current_selection.mode,
+                    selected_player_bus_name: current_selection.selected_player_bus_name,
+                    ..BridgeState::default()
+                };
                 empty.updated_at_ms = now_ms();
                 shared.update(empty).await;
             }
@@ -25,8 +39,12 @@ pub async fn run_poll_loop(shared: SharedState, interval: Duration) {
     }
 }
 
-pub fn perform_action(action: ControlAction) -> anyhow::Result<()> {
-    let player = resolve_active_player()?;
+pub async fn perform_action(
+    action: ControlAction,
+    selection: &SharedSelection,
+) -> anyhow::Result<()> {
+    let current_selection = selection.snapshot().await;
+    let player = resolve_active_player(&current_selection)?;
     match action {
         ControlAction::Play => player.play()?,
         ControlAction::Pause => player.pause()?,
@@ -40,22 +58,65 @@ pub fn perform_action(action: ControlAction) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn collect_state() -> anyhow::Result<BridgeState> {
-    let player = resolve_active_player()?;
-    Ok(player_to_state(&player))
-}
-
-fn resolve_active_player() -> anyhow::Result<Player> {
+fn collect_state(selection: &PlayerSelection) -> anyhow::Result<BridgeState> {
     let finder = PlayerFinder::new()?;
-    if let Ok(player) = finder.find_active() {
-        return Ok(player);
+    let mut players = finder.find_all()?;
+
+    let available_players = players
+        .iter()
+        .map(|player| PlayerDescriptor {
+            bus_name: player.bus_name().to_string(),
+            player_name: player.identity().to_string(),
+        })
+        .collect::<Vec<_>>();
+
+    if let Some(player) = pick_player(&finder, &mut players, selection) {
+        let mut state = player_to_state(&player);
+        state.available_players = available_players;
+        state.active_player_bus_name = Some(player.bus_name().to_string());
+        state.selection_mode = selection.mode;
+        state.selected_player_bus_name = selection.selected_player_bus_name.clone();
+        return Ok(state);
     }
 
-    let players = finder.find_all()?;
-    players
-        .into_iter()
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("no mpris players found"))
+    Ok(BridgeState {
+        available_players,
+        selection_mode: selection.mode,
+        selected_player_bus_name: selection.selected_player_bus_name.clone(),
+        updated_at_ms: now_ms(),
+        ..BridgeState::default()
+    })
+}
+
+fn resolve_active_player(selection: &PlayerSelection) -> anyhow::Result<Player> {
+    let finder = PlayerFinder::new()?;
+    let mut players = finder.find_all()?;
+
+    pick_player(&finder, &mut players, selection)
+        .ok_or_else(|| anyhow::anyhow!("no mpris players found for current selection"))
+}
+
+fn pick_player(
+    finder: &PlayerFinder,
+    players: &mut Vec<Player>,
+    selection: &PlayerSelection,
+) -> Option<Player> {
+    if selection.mode == PlayerSelectionMode::Manual {
+        if let Some(bus_name) = selection.selected_player_bus_name.as_deref() {
+            if let Some(index) = players
+                .iter()
+                .position(|player| player.bus_name() == bus_name)
+            {
+                return Some(players.swap_remove(index));
+            }
+        }
+    }
+
+    if let Ok(active) = finder.find_active() {
+        return Some(active);
+    }
+
+    players.pop()
 }
 
 fn player_to_state(player: &Player) -> BridgeState {
@@ -65,6 +126,9 @@ fn player_to_state(player: &Player) -> BridgeState {
         .as_ref()
         .and_then(|m| m.art_url())
         .map(|url| url.to_string());
+    let art_proxy_url = art_url
+        .as_ref()
+        .and_then(|value| build_art_proxy_path(value));
 
     let artist = metadata
         .as_ref()
@@ -100,6 +164,7 @@ fn player_to_state(player: &Player) -> BridgeState {
         artist,
         album,
         art_url,
+        art_proxy_url,
         duration_us,
         position_us,
         playback_rate: if status == MprisPlaybackStatus::Playing {
@@ -113,6 +178,7 @@ fn player_to_state(player: &Player) -> BridgeState {
         can_pause: player.can_pause().unwrap_or(false),
         can_seek: player.can_seek().unwrap_or(false),
         updated_at_ms: now_ms(),
+        ..BridgeState::default()
     }
 }
 
@@ -131,7 +197,6 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-
 fn seek_to_position(player: &Player, position_us: u64) -> anyhow::Result<()> {
     let metadata = player.get_metadata().ok();
     let track_id = metadata
@@ -140,4 +205,20 @@ fn seek_to_position(player: &Player, position_us: u64) -> anyhow::Result<()> {
 
     player.set_position_in_microseconds(track_id, position_us)?;
     Ok(())
+}
+
+fn is_expected_absence_error(err: &anyhow::Error) -> bool {
+    let message = err.to_string().to_ascii_lowercase();
+    message.contains("no player is being controlled by playerctld")
+        || message.contains("no mpris players found")
+        || message.contains("org.freedesktop.dbus.error.namehasnoowner")
+}
+
+fn build_art_proxy_path(src: &str) -> Option<String> {
+    if !src.starts_with("file://") {
+        return None;
+    }
+
+    let encoded = form_urlencoded::byte_serialize(src.as_bytes()).collect::<String>();
+    Some(format!("/art?src={encoded}"))
 }
