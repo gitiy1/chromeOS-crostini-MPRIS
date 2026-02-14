@@ -142,11 +142,21 @@ function updatePosition(state: BridgeState) {
   if (!("mediaSession" in navigator) || !("setPositionState" in navigator.mediaSession)) return;
   const duration = Math.max((state.durationUs ?? 0) / 1_000_000, 0);
   const position = Math.max(state.positionUs / 1_000_000, 0);
-  const playbackRate = state.playbackStatus === "playing" ? Math.max(state.playbackRate, 0.1) : 0;
 
   try {
     if (duration > 0) {
-      navigator.mediaSession.setPositionState({ duration, position: Math.min(position, duration), playbackRate });
+      const payload: MediaPositionState = {
+        duration,
+        position: Math.min(position, duration),
+      };
+
+      // MediaSession 不允许 playbackRate = 0。
+      // 暂停/停止时不传 playbackRate，让浏览器使用默认值并保持当前位置。
+      if (state.playbackStatus === "playing") {
+        payload.playbackRate = Math.max(state.playbackRate, 0.1);
+      }
+
+      navigator.mediaSession.setPositionState(payload);
     }
   } catch (error) {
     void log("warn", `setPositionState failed: ${String(error)}`);
