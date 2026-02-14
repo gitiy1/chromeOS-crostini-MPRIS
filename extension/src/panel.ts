@@ -14,6 +14,7 @@ interface BridgeState {
   canGoPrevious: boolean;
   canPlay: boolean;
   canPause: boolean;
+  canSeek: boolean;
 }
 
 type BridgeHealth = "idle" | "connecting" | "connected" | "error";
@@ -37,6 +38,10 @@ const DEFAULT_BASE_URL = "http://penguin.linux.test:5000";
 const BRIDGE_DEBUG_KEY = "bridgeDebug";
 const BRIDGE_LOGS_KEY = "bridgeLogs";
 const LOG_LIMIT = 200;
+const KEEPALIVE_FREQUENCY = 220;
+const KEEPALIVE_GAIN = 0.00001;
+const POSITION_SYNC_INTERVAL_MS = 1000;
+const DEFAULT_SEEK_OFFSET_SECONDS = 10;
 
 let currentBaseUrl = DEFAULT_BASE_URL;
 let eventSource: EventSource | null = null;
@@ -49,14 +54,9 @@ let bridgeDebug: BridgeDebugState = {
   lastState: null,
 };
 let bridgeLogs: LogRecord[] = [];
-
-const audio = new Audio();
-audio.autoplay = false;
-audio.muted = true;
-audio.volume = 0;
-
-let focusAudioReady = false;
-let audioContext: AudioContext | null = null;
+let keepaliveAudioContext: AudioContext | null = null;
+let latestState: BridgeState | null = null;
+let latestStateAtMs = 0;
 
 function hasStorageApi(): boolean {
   return typeof chrome !== "undefined" && !!chrome.storage?.local;
@@ -143,7 +143,7 @@ async function loadDebugData() {
       syncDebugToBackground();
       log("info", "loaded debug snapshot via background relay");
     } else {
-      log("warn", "storage unavailable in offscreen; using runtime defaults");
+      log("warn", "storage unavailable in panel; using runtime defaults");
     }
     return;
   }
@@ -173,31 +173,32 @@ async function loadDebugData() {
   await saveLogs();
 }
 
-async function initFocusAudio() {
-  if (focusAudioReady) return;
-
+async function ensureKeepaliveAudio() {
   if (typeof AudioContext === "undefined") {
-    log("warn", "AudioContext API unavailable; media controls may not appear reliably");
+    log("warn", "AudioContext unavailable; keepalive audio cannot start");
     return;
   }
 
-  audioContext = new AudioContext();
-  const oscillator = audioContext.createOscillator();
-  const gainNode = audioContext.createGain();
-  const destination = audioContext.createMediaStreamDestination();
+  if (!keepaliveAudioContext) {
+    keepaliveAudioContext = new AudioContext();
+    const oscillator = keepaliveAudioContext.createOscillator();
+    const gainNode = keepaliveAudioContext.createGain();
 
-  oscillator.type = "sine";
-  oscillator.frequency.value = 220;
-  gainNode.gain.value = 0.00001;
+    oscillator.type = "sine";
+    oscillator.frequency.value = KEEPALIVE_FREQUENCY;
+    gainNode.gain.value = KEEPALIVE_GAIN;
 
-  oscillator.connect(gainNode);
-  gainNode.connect(destination);
+    oscillator.connect(gainNode);
+    gainNode.connect(keepaliveAudioContext.destination);
+    oscillator.start();
+  }
 
-  audio.srcObject = destination.stream;
-  oscillator.start();
-
-  focusAudioReady = true;
-  log("info", "focus audio initialized with WebAudio stream");
+  if (keepaliveAudioContext.state === "suspended") {
+    await keepaliveAudioContext.resume().catch((error) => {
+      log("warn", `failed to resume keepalive audio context: ${String(error)}`);
+      return undefined;
+    });
+  }
 }
 
 function setPlaybackState(state: PlaybackStatus) {
@@ -228,17 +229,37 @@ function setMetadata(state: BridgeState) {
   });
 }
 
+function getProjectedState(): BridgeState | null {
+  if (!latestState) return null;
+  if (latestState.playbackStatus !== "playing") return latestState;
+
+  const elapsedUs = Math.max(0, (Date.now() - latestStateAtMs) * 1000);
+  const projectedPositionUs = latestState.positionUs + elapsedUs * Math.max(latestState.playbackRate, 0.1);
+  const maxDurationUs = latestState.durationUs ?? projectedPositionUs;
+
+  return {
+    ...latestState,
+    positionUs: Math.min(projectedPositionUs, maxDurationUs),
+  };
+}
+
 function updatePosition(state: BridgeState) {
   if (!("mediaSession" in navigator) || !("setPositionState" in navigator.mediaSession)) return;
+
   const duration = Math.max((state.durationUs ?? 0) / 1_000_000, 0);
   const position = Math.max(state.positionUs / 1_000_000, 0);
 
   try {
     if (duration > 0) {
-      const payload: MediaPositionState = { duration, position: Math.min(position, duration) };
+      const payload: MediaPositionState = {
+        duration,
+        position: Math.min(position, duration),
+      };
+
       if (state.playbackStatus === "playing") {
         payload.playbackRate = Math.max(state.playbackRate, 0.1);
       }
+
       navigator.mediaSession.setPositionState(payload);
     }
   } catch (error) {
@@ -246,55 +267,121 @@ function updatePosition(state: BridgeState) {
   }
 }
 
+function startPositionSyncLoop() {
+  setInterval(() => {
+    const projected = getProjectedState();
+    if (!projected || projected.playbackStatus !== "playing") return;
+    updatePosition(projected);
+  }, POSITION_SYNC_INTERVAL_MS);
+}
+
 async function sendControl(action: string) {
   await fetch(`${currentBaseUrl}/control/${action}`, { method: "POST", mode: "cors" });
   log("info", `sent control action: ${action}`);
 }
 
-function registerActionHandlers() {
-  if (!("mediaSession" in navigator)) return;
-  const map: Record<string, string> = {
-    play: "play",
-    pause: "pause",
-    previoustrack: "previous",
-    nexttrack: "next",
-    stop: "stop",
-  };
-
-  for (const [action, command] of Object.entries(map)) {
-    navigator.mediaSession.setActionHandler(action as MediaSessionAction, () => {
-      void sendControl(command).catch((error) => {
-        void setHealth("error", `control failed: ${String(error)}`);
-        log("error", `control action failed (${command}): ${String(error)}`);
-      });
-    });
-  }
+async function sendSeekTo(positionUs: number) {
+  await fetch(`${currentBaseUrl}/control/seek?positionUs=${Math.max(0, Math.floor(positionUs))}`, {
+    method: "POST",
+    mode: "cors",
+  });
+  log("info", `sent control seekTo: ${Math.floor(positionUs)}us`);
 }
 
-async function ensureAudioFocus(active: boolean) {
-  await initFocusAudio();
-  if (!focusAudioReady) return;
+async function sendSeekBy(offsetUs: number) {
+  await fetch(`${currentBaseUrl}/control/seek?offsetUs=${Math.floor(offsetUs)}`, {
+    method: "POST",
+    mode: "cors",
+  });
+  log("info", `sent control seekBy: ${Math.floor(offsetUs)}us`);
+}
 
-  if (active) {
-    if (audioContext?.state === "suspended") {
-      await audioContext.resume().catch(() => undefined);
-    }
-
-    if (audio.paused) {
-      await audio.play().catch((error) => {
-        log("warn", `failed to start focus audio: ${String(error)}`);
-        return undefined;
-      });
-    }
-  } else {
-    audio.pause();
-    if (audioContext?.state === "running") {
-      await audioContext.suspend().catch(() => undefined);
-    }
+function resolvePlayPauseCommand(action: "play" | "pause"): "play" | "pause" {
+  const status = bridgeDebug.lastState?.playbackStatus;
+  if (action === "pause" && status === "paused") {
+    return "play";
   }
+  if (action === "play" && status === "playing") {
+    return "pause";
+  }
+  return action;
+}
+
+function registerActionHandlers() {
+  if (!("mediaSession" in navigator)) return;
+
+  const setHandler = <A extends MediaSessionAction>(action: A, handler: MediaSessionActionHandler | null) => {
+    try {
+      navigator.mediaSession.setActionHandler(action, handler);
+    } catch {
+      log("warn", `action handler not supported: ${action}`);
+    }
+  };
+
+  const sendMapped = (action: MediaSessionAction) => {
+    let command: string;
+
+    if (action === "play" || action === "pause") {
+      command = resolvePlayPauseCommand(action);
+    } else if (action === "previoustrack") {
+      command = "previous";
+    } else if (action === "nexttrack") {
+      command = "next";
+    } else if (action === "stop") {
+      command = "stop";
+    } else {
+      return;
+    }
+
+    void sendControl(command).catch((error) => {
+      void setHealth("error", `control failed: ${String(error)}`);
+      log("error", `control action failed (${command}): ${String(error)}`);
+    });
+  };
+
+  for (const action of ["play", "pause", "previoustrack", "nexttrack", "stop"] as const) {
+    setHandler(action, () => {
+      sendMapped(action);
+    });
+  }
+
+  setHandler("seekbackward", (details) => {
+    const offsetSeconds = details.seekOffset ?? DEFAULT_SEEK_OFFSET_SECONDS;
+    void sendSeekBy(-offsetSeconds * 1_000_000).catch((error) => {
+      void setHealth("error", `seekbackward failed: ${String(error)}`);
+      log("error", `seekbackward failed: ${String(error)}`);
+    });
+  });
+
+  setHandler("seekforward", (details) => {
+    const offsetSeconds = details.seekOffset ?? DEFAULT_SEEK_OFFSET_SECONDS;
+    void sendSeekBy(offsetSeconds * 1_000_000).catch((error) => {
+      void setHealth("error", `seekforward failed: ${String(error)}`);
+      log("error", `seekforward failed: ${String(error)}`);
+    });
+  });
+
+  setHandler("seekto", (details) => {
+    if (typeof details.seekTime !== "number") return;
+
+    const targetUs = details.seekTime * 1_000_000;
+    if (latestState) {
+      latestState = { ...latestState, positionUs: Math.max(0, Math.floor(targetUs)) };
+      latestStateAtMs = Date.now();
+      updatePosition(latestState);
+    }
+
+    void sendSeekTo(targetUs).catch((error) => {
+      void setHealth("error", `seekto failed: ${String(error)}`);
+      log("error", `seekto failed: ${String(error)}`);
+    });
+  });
 }
 
 async function applyState(state: BridgeState) {
+  latestState = state;
+  latestStateAtMs = Date.now();
+
   setMetadata(state);
   updatePosition(state);
 
@@ -302,7 +389,7 @@ async function applyState(state: BridgeState) {
     state.playbackStatus === "playing" ? "playing" : state.playbackStatus === "paused" ? "paused" : "none";
 
   setPlaybackState(playbackState);
-  await ensureAudioFocus(playbackState !== "none");
+  await ensureKeepaliveAudio();
 
   bridgeDebug = {
     ...bridgeDebug,
@@ -344,25 +431,29 @@ function connectEvents() {
 
 function addLifecycleLogs() {
   window.addEventListener("pagehide", () => {
-    log("warn", "offscreen pagehide fired");
+    log("warn", "panel pagehide fired");
   });
 
   window.addEventListener("beforeunload", () => {
-    log("warn", "offscreen beforeunload fired");
+    log("warn", "panel beforeunload fired");
   });
 
   document.addEventListener("visibilitychange", () => {
-    log("info", `offscreen visibility=${document.visibilityState}`);
+    log("info", `panel visibility=${document.visibilityState}`);
   });
 }
 
 async function boot() {
-  log("info", "offscreen boot start");
+  log("info", "panel boot start");
+  await ensureKeepaliveAudio();
+  log("info", "keepalive audio initialized via AudioContext oscillator");
+
   addLifecycleLogs();
+  startPositionSyncLoop();
   await loadDebugData();
   registerActionHandlers();
   connectEvents();
-  log("info", "offscreen boot completed");
+  log("info", "panel boot completed");
 }
 
 if (typeof chrome !== "undefined" && chrome.storage?.onChanged) {
@@ -378,5 +469,5 @@ if (typeof chrome !== "undefined" && chrome.storage?.onChanged) {
 
 void boot().catch((error) => {
   void setHealth("error", String(error));
-  log("error", `offscreen boot failed: ${String(error)}`);
+  log("error", `panel boot failed: ${String(error)}`);
 });

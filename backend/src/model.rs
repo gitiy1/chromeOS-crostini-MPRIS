@@ -16,6 +16,7 @@ pub struct BridgeState {
     pub can_go_previous: bool,
     pub can_play: bool,
     pub can_pause: bool,
+    pub can_seek: bool,
     pub updated_at_ms: u64,
 }
 
@@ -44,6 +45,7 @@ impl Default for BridgeState {
             can_go_previous: false,
             can_play: false,
             can_pause: false,
+            can_seek: false,
             updated_at_ms: 0,
         }
     }
@@ -57,4 +59,6 @@ pub enum ControlAction {
     Next,
     Previous,
     Stop,
+    SeekTo(u64),
+    SeekBy(i64),
 }
