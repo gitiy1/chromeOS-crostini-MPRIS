@@ -1,5 +1,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use url::form_urlencoded;
+
 use mpris::{PlaybackStatus as MprisPlaybackStatus, Player, PlayerFinder};
 use tokio::time;
 use tracing::{debug, warn};
@@ -124,6 +126,7 @@ fn player_to_state(player: &Player) -> BridgeState {
         .as_ref()
         .and_then(|m| m.art_url())
         .map(|url| url.to_string());
+    let art_proxy_url = art_url.as_ref().map(|value| build_art_proxy_path(value));
 
     let artist = metadata
         .as_ref()
@@ -159,6 +162,7 @@ fn player_to_state(player: &Player) -> BridgeState {
         artist,
         album,
         art_url,
+        art_proxy_url,
         duration_us,
         position_us,
         playback_rate: if status == MprisPlaybackStatus::Playing {
@@ -206,4 +210,9 @@ fn is_expected_absence_error(err: &anyhow::Error) -> bool {
     message.contains("no player is being controlled by playerctld")
         || message.contains("no mpris players found")
         || message.contains("org.freedesktop.dbus.error.namehasnoowner")
+}
+
+fn build_art_proxy_path(src: &str) -> String {
+    let encoded = form_urlencoded::byte_serialize(src.as_bytes()).collect::<String>();
+    format!("/art?src={encoded}")
 }

@@ -12,6 +12,7 @@ interface BridgeState {
   artist: string[];
   album: string | null;
   artUrl: string | null;
+  artProxyUrl: string | null;
   durationUs: number | null;
   positionUs: number;
   playbackRate: number;
@@ -167,6 +168,7 @@ function renderPanel() {
     `selected: ${state?.selectedPlayerBusName ?? "-"}`,
     `playback: ${state?.playbackStatus ?? "-"}`,
     `track: ${track}`,
+    `art: ${state?.artProxyUrl ?? state?.artUrl ?? "-"}`,
     `position: ${pos}`,
   ].join("\n");
 
@@ -467,6 +469,9 @@ function setPlaybackState(state: PlaybackStatus) {
 }
 
 function toArtworkSrc(artUrl: string): string {
+  if (artUrl.startsWith("/art?src=")) {
+    return `${currentBaseUrl}${artUrl}`;
+  }
   if (artUrl.startsWith("http://") || artUrl.startsWith("https://")) {
     return artUrl;
   }
@@ -479,7 +484,8 @@ function toArtworkSrc(artUrl: string): string {
 function setMetadata(state: BridgeState) {
   if (!("mediaSession" in navigator)) return;
 
-  const artwork = state.artUrl ? [{ src: toArtworkSrc(state.artUrl), sizes: "512x512", type: "image/*" }] : [];
+  const artworkSource = state.artProxyUrl ?? state.artUrl;
+  const artwork = artworkSource ? [{ src: toArtworkSrc(artworkSource), sizes: "512x512", type: "image/*" }] : [];
 
   navigator.mediaSession.metadata = new MediaMetadata({
     title: state.title ?? "Crostini Linux",
