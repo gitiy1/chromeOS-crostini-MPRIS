@@ -152,11 +152,24 @@ function setPlaybackState(state: PlaybackStatus) {
   navigator.mediaSession.playbackState = state;
 }
 
+function toArtworkSrc(artUrl: string): string {
+  if (artUrl.startsWith("http://") || artUrl.startsWith("https://")) {
+    return artUrl;
+  }
+
+  if (artUrl.startsWith("file://")) {
+    return `${currentBaseUrl}/art?src=${encodeURIComponent(artUrl)}`;
+  }
+
+  // 未知协议保守处理：走后端，由后端决定是否接受。
+  return `${currentBaseUrl}/art?src=${encodeURIComponent(artUrl)}`;
+}
+
 function setMetadata(state: BridgeState) {
   if (!("mediaSession" in navigator)) return;
 
   const artwork = state.artUrl
-    ? [{ src: `${currentBaseUrl}/art?src=${encodeURIComponent(state.artUrl)}`, sizes: "512x512", type: "image/*" }]
+    ? [{ src: toArtworkSrc(state.artUrl), sizes: "512x512", type: "image/*" }]
     : [];
 
   navigator.mediaSession.metadata = new MediaMetadata({
