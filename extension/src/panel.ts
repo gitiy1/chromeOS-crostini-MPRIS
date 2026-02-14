@@ -334,6 +334,33 @@ async function ensureKeepaliveAudio() {
   }
 }
 
+async function syncKeepaliveAudioForPlayback(playbackState: PlaybackStatus) {
+  if (!keepaliveAudioContext) {
+    if (playbackState !== "playing") {
+      return;
+    }
+    await ensureKeepaliveAudio();
+    return;
+  }
+
+  if (playbackState === "playing") {
+    if (keepaliveAudioContext.state === "suspended") {
+      await keepaliveAudioContext.resume().catch((error) => {
+        log("warn", `failed to resume keepalive audio context: ${String(error)}`);
+        return undefined;
+      });
+    }
+    return;
+  }
+
+  if (keepaliveAudioContext.state === "running") {
+    await keepaliveAudioContext.suspend().catch((error) => {
+      log("warn", `failed to suspend keepalive audio context: ${String(error)}`);
+      return undefined;
+    });
+  }
+}
+
 function setPlaybackState(state: PlaybackStatus) {
   if (!("mediaSession" in navigator)) return;
   navigator.mediaSession.playbackState = state;
@@ -527,7 +554,7 @@ async function applyState(state: BridgeState) {
     state.playbackStatus === "playing" ? "playing" : state.playbackStatus === "paused" ? "paused" : "none";
 
   setPlaybackState(playbackState);
-  await ensureKeepaliveAudio();
+  await syncKeepaliveAudioForPlayback(playbackState);
 
   bridgeDebug = {
     ...bridgeDebug,
@@ -613,8 +640,6 @@ async function boot() {
   bindPanelUiEvents();
   renderPanel();
   log("info", "panel boot start");
-  await ensureKeepaliveAudio();
-  log("info", "keepalive audio initialized via AudioContext oscillator");
 
   addLifecycleLogs();
   startPositionSyncLoop();
