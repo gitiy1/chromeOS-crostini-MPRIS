@@ -2,7 +2,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mpris::{PlaybackStatus as MprisPlaybackStatus, Player, PlayerFinder};
 use tokio::time;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::{
     model::{
@@ -20,7 +20,11 @@ pub async fn run_poll_loop(shared: SharedState, selection: SharedSelection, inte
         match collect_state(&current_selection) {
             Ok(state) => shared.update(state).await,
             Err(err) => {
-                warn!("failed to collect player state: {err}");
+                if is_expected_absence_error(&err) {
+                    debug!("no active player yet: {err}");
+                } else {
+                    warn!("failed to collect player state: {err}");
+                }
                 let mut empty = BridgeState {
                     selection_mode: current_selection.mode,
                     selected_player_bus_name: current_selection.selected_player_bus_name,
@@ -195,4 +199,11 @@ fn seek_to_position(player: &Player, position_us: u64) -> anyhow::Result<()> {
 
     player.set_position_in_microseconds(track_id, position_us)?;
     Ok(())
+}
+
+fn is_expected_absence_error(err: &anyhow::Error) -> bool {
+    let message = err.to_string().to_ascii_lowercase();
+    message.contains("no player is being controlled by playerctld")
+        || message.contains("no mpris players found")
+        || message.contains("org.freedesktop.dbus.error.namehasnoowner")
 }

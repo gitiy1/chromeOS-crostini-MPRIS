@@ -28,7 +28,7 @@ cargo run --release
 
 环境变量：
 
-- `BIND_ADDR`（默认 `0.0.0.0:5000`）
+- `BIND_ADDR`（默认 `0.0.0.0:5167`）
 - `POLL_INTERVAL_MS`（默认 `500`，最小 200）
 
 ## 前端（Bun + MV3）
@@ -43,7 +43,7 @@ bun run build
 
 ### 可选配置
 
-扩展支持 `chrome.storage.local.baseUrl` 覆盖后端地址（默认 `http://penguin.linux.test:5000`）。
+扩展支持 `chrome.storage.local.baseUrl` 覆盖后端地址（默认 `http://penguin.linux.test:5167`）。
 
 ## systemd 用户服务（容器内）
 

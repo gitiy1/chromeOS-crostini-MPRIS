@@ -38,7 +38,7 @@ async fn main() {
         )
         .init();
 
-    let bind = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:5000".to_string());
+    let bind = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:5167".to_string());
     let addr: SocketAddr = bind.parse().expect("BIND_ADDR must be host:port");
     let interval_ms = std::env::var("POLL_INTERVAL_MS")
         .ok()

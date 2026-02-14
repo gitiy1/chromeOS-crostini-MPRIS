@@ -55,7 +55,7 @@ interface PanelElements {
   playerMode: HTMLSelectElement;
   playerSelect: HTMLSelectElement;
 }
-const DEFAULT_BASE_URL = "http://penguin.linux.test:5000";
+const DEFAULT_BASE_URL = "http://penguin.linux.test:5167";
 const BRIDGE_DEBUG_KEY = "bridgeDebug";
 const BRIDGE_LOGS_KEY = "bridgeLogs";
 const LOG_LIMIT = 200;
