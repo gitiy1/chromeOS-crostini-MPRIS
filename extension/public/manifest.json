@@ -5,7 +5,8 @@
   "description": "Bridge ChromeOS media controls to Crostini MPRIS players.",
   "permissions": [
     "offscreen",
-    "storage"
+    "storage",
+    "alarms"
   ],
   "host_permissions": [
     "http://penguin.linux.test:5000/*",
