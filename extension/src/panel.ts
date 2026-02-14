@@ -37,6 +37,8 @@ const DEFAULT_BASE_URL = "http://penguin.linux.test:5000";
 const BRIDGE_DEBUG_KEY = "bridgeDebug";
 const BRIDGE_LOGS_KEY = "bridgeLogs";
 const LOG_LIMIT = 200;
+const KEEPALIVE_FREQUENCY = 220;
+const KEEPALIVE_GAIN = 0.00001;
 
 let currentBaseUrl = DEFAULT_BASE_URL;
 let eventSource: EventSource | null = null;
@@ -50,13 +52,35 @@ let bridgeDebug: BridgeDebugState = {
 };
 let bridgeLogs: LogRecord[] = [];
 
-const audio = new Audio();
-audio.autoplay = false;
-audio.muted = true;
-audio.volume = 0;
+let keepaliveAudioContext: AudioContext | null = null;
 
-let focusAudioReady = false;
-let audioContext: AudioContext | null = null;
+async function ensureKeepaliveAudio() {
+  if (typeof AudioContext === "undefined") {
+    log("warn", "AudioContext unavailable; keepalive audio cannot start");
+    return;
+  }
+
+  if (!keepaliveAudioContext) {
+    keepaliveAudioContext = new AudioContext();
+    const oscillator = keepaliveAudioContext.createOscillator();
+    const gainNode = keepaliveAudioContext.createGain();
+
+    oscillator.type = "sine";
+    oscillator.frequency.value = KEEPALIVE_FREQUENCY;
+    gainNode.gain.value = KEEPALIVE_GAIN;
+
+    oscillator.connect(gainNode);
+    gainNode.connect(keepaliveAudioContext.destination);
+    oscillator.start();
+  }
+
+  if (keepaliveAudioContext.state === "suspended") {
+    await keepaliveAudioContext.resume().catch((error) => {
+      log("warn", `failed to resume keepalive audio context: ${String(error)}`);
+      return undefined;
+    });
+  }
+}
 
 function hasStorageApi(): boolean {
   return typeof chrome !== "undefined" && !!chrome.storage?.local;
@@ -143,7 +167,7 @@ async function loadDebugData() {
       syncDebugToBackground();
       log("info", "loaded debug snapshot via background relay");
     } else {
-      log("warn", "storage unavailable in offscreen; using runtime defaults");
+      log("warn", "storage unavailable in panel; using runtime defaults");
     }
     return;
   }
@@ -171,33 +195,6 @@ async function loadDebugData() {
 
   await saveDebugState();
   await saveLogs();
-}
-
-async function initFocusAudio() {
-  if (focusAudioReady) return;
-
-  if (typeof AudioContext === "undefined") {
-    log("warn", "AudioContext API unavailable; media controls may not appear reliably");
-    return;
-  }
-
-  audioContext = new AudioContext();
-  const oscillator = audioContext.createOscillator();
-  const gainNode = audioContext.createGain();
-  const destination = audioContext.createMediaStreamDestination();
-
-  oscillator.type = "sine";
-  oscillator.frequency.value = 220;
-  gainNode.gain.value = 0.00001;
-
-  oscillator.connect(gainNode);
-  gainNode.connect(destination);
-
-  audio.srcObject = destination.stream;
-  oscillator.start();
-
-  focusAudioReady = true;
-  log("info", "focus audio initialized with WebAudio stream");
 }
 
 function setPlaybackState(state: PlaybackStatus) {
@@ -251,46 +248,45 @@ async function sendControl(action: string) {
   log("info", `sent control action: ${action}`);
 }
 
-function registerActionHandlers() {
-  if (!("mediaSession" in navigator)) return;
-  const map: Record<string, string> = {
-    play: "play",
-    pause: "pause",
-    previoustrack: "previous",
-    nexttrack: "next",
-    stop: "stop",
-  };
-
-  for (const [action, command] of Object.entries(map)) {
-    navigator.mediaSession.setActionHandler(action as MediaSessionAction, () => {
-      void sendControl(command).catch((error) => {
-        void setHealth("error", `control failed: ${String(error)}`);
-        log("error", `control action failed (${command}): ${String(error)}`);
-      });
-    });
+function resolvePlayPauseCommand(action: "play" | "pause"): "play" | "pause" {
+  const status = bridgeDebug.lastState?.playbackStatus;
+  if (action === "pause" && status === "paused") {
+    return "play";
   }
+  if (action === "play" && status === "playing") {
+    return "pause";
+  }
+  return action;
 }
 
-async function ensureAudioFocus(active: boolean) {
-  await initFocusAudio();
-  if (!focusAudioReady) return;
+function registerActionHandlers() {
+  if (!("mediaSession" in navigator)) return;
 
-  if (active) {
-    if (audioContext?.state === "suspended") {
-      await audioContext.resume().catch(() => undefined);
+  const sendMapped = (action: MediaSessionAction) => {
+    let command: string;
+
+    if (action === "play" || action === "pause") {
+      command = resolvePlayPauseCommand(action);
+    } else if (action === "previoustrack") {
+      command = "previous";
+    } else if (action === "nexttrack") {
+      command = "next";
+    } else if (action === "stop") {
+      command = "stop";
+    } else {
+      return;
     }
 
-    if (audio.paused) {
-      await audio.play().catch((error) => {
-        log("warn", `failed to start focus audio: ${String(error)}`);
-        return undefined;
-      });
-    }
-  } else {
-    audio.pause();
-    if (audioContext?.state === "running") {
-      await audioContext.suspend().catch(() => undefined);
-    }
+    void sendControl(command).catch((error) => {
+      void setHealth("error", `control failed: ${String(error)}`);
+      log("error", `control action failed (${command}): ${String(error)}`);
+    });
+  };
+
+  for (const action of ["play", "pause", "previoustrack", "nexttrack", "stop"] as const) {
+    navigator.mediaSession.setActionHandler(action, () => {
+      sendMapped(action);
+    });
   }
 }
 
@@ -302,7 +298,7 @@ async function applyState(state: BridgeState) {
     state.playbackStatus === "playing" ? "playing" : state.playbackStatus === "paused" ? "paused" : "none";
 
   setPlaybackState(playbackState);
-  await ensureAudioFocus(playbackState !== "none");
+  await ensureKeepaliveAudio();
 
   bridgeDebug = {
     ...bridgeDebug,
@@ -344,25 +340,28 @@ function connectEvents() {
 
 function addLifecycleLogs() {
   window.addEventListener("pagehide", () => {
-    log("warn", "offscreen pagehide fired");
-  });
+    log("warn", "panel pagehide fired");
+      });
 
   window.addEventListener("beforeunload", () => {
-    log("warn", "offscreen beforeunload fired");
-  });
+    log("warn", "panel beforeunload fired");
+      });
 
   document.addEventListener("visibilitychange", () => {
-    log("info", `offscreen visibility=${document.visibilityState}`);
+    log("info", `panel visibility=${document.visibilityState}`);
   });
 }
 
 async function boot() {
-  log("info", "offscreen boot start");
+  log("info", "panel boot start");
+  await ensureKeepaliveAudio();
+  log("info", "keepalive audio initialized via AudioContext oscillator");
+
   addLifecycleLogs();
   await loadDebugData();
   registerActionHandlers();
   connectEvents();
-  log("info", "offscreen boot completed");
+  log("info", "panel boot completed");
 }
 
 if (typeof chrome !== "undefined" && chrome.storage?.onChanged) {
@@ -378,5 +377,5 @@ if (typeof chrome !== "undefined" && chrome.storage?.onChanged) {
 
 void boot().catch((error) => {
   void setHealth("error", String(error));
-  log("error", `offscreen boot failed: ${String(error)}`);
+  log("error", `panel boot failed: ${String(error)}`);
 });

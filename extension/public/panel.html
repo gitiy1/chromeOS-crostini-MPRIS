@@ -2,12 +2,18 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>Crostini MPRIS Bridge Debug</title>
+    <title>Crostini MPRIS Bridge Panel</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
     <main>
-      <h1>Crostini MPRIS Bridge</h1>
+      <h1>Crostini MPRIS 媒体同步窗口</h1>
+      <section>
+        <p style="margin: 0; font-size: 12px; line-height: 1.5">
+          这个窗口保持打开时，会将 Crostini 播放状态同步到 ChromeOS 媒体中心，并接管媒体键控制。
+        </p>
+      </section>
+
       <section>
         <div>Health: <span id="health">idle</span></div>
         <label>
@@ -17,7 +23,6 @@
         <div class="row">
           <button id="saveBaseUrl">保存地址</button>
           <button id="ping">测试 /healthz</button>
-          <button id="openPanel">打开媒体同步窗口</button>
         </div>
       </section>
 
@@ -34,6 +39,6 @@
         <pre id="logs" class="panel">(no logs)</pre>
       </section>
     </main>
-    <script type="module" src="popup.js"></script>
+    <script type="module" src="panel.js"></script>
   </body>
 </html>
