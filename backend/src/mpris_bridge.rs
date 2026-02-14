@@ -54,7 +54,7 @@ pub async fn perform_action(
 
 fn collect_state(selection: &PlayerSelection) -> anyhow::Result<BridgeState> {
     let finder = PlayerFinder::new()?;
-    let players = finder.find_all()?;
+    let mut players = finder.find_all()?;
 
     let available_players = players
         .iter()
@@ -64,7 +64,7 @@ fn collect_state(selection: &PlayerSelection) -> anyhow::Result<BridgeState> {
         })
         .collect::<Vec<_>>();
 
-    if let Some(player) = pick_player(&finder, &players, selection) {
+    if let Some(player) = pick_player(&finder, &mut players, selection) {
         let mut state = player_to_state(&player);
         state.available_players = available_players;
         state.active_player_bus_name = Some(player.bus_name().to_string());
@@ -84,21 +84,24 @@ fn collect_state(selection: &PlayerSelection) -> anyhow::Result<BridgeState> {
 
 fn resolve_active_player(selection: &PlayerSelection) -> anyhow::Result<Player> {
     let finder = PlayerFinder::new()?;
-    let players = finder.find_all()?;
+    let mut players = finder.find_all()?;
 
-    pick_player(&finder, &players, selection)
+    pick_player(&finder, &mut players, selection)
         .ok_or_else(|| anyhow::anyhow!("no mpris players found for current selection"))
 }
 
 fn pick_player(
     finder: &PlayerFinder,
-    players: &[Player],
+    players: &mut Vec<Player>,
     selection: &PlayerSelection,
 ) -> Option<Player> {
     if selection.mode == PlayerSelectionMode::Manual {
         if let Some(bus_name) = selection.selected_player_bus_name.as_deref() {
-            if let Some(player) = players.iter().find(|player| player.bus_name() == bus_name) {
-                return Some(player.clone());
+            if let Some(index) = players
+                .iter()
+                .position(|player| player.bus_name() == bus_name)
+            {
+                return Some(players.swap_remove(index));
             }
         }
     }
@@ -107,7 +110,7 @@ fn pick_player(
         return Some(active);
     }
 
-    players.first().cloned()
+    players.pop()
 }
 
 fn player_to_state(player: &Player) -> BridgeState {
