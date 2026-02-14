@@ -3,6 +3,8 @@ const BRIDGE_DEBUG_KEY = "bridgeDebug";
 const BRIDGE_LOGS_KEY = "bridgeLogs";
 const BASE_URL_KEY = "baseUrl";
 const LOG_LIMIT = 200;
+const OFFSCREEN_WATCHDOG_ALARM = "bridge-offscreen-watchdog";
+const OFFSCREEN_WATCHDOG_MINUTES = 0.5;
 
 interface LogRecord {
   at: number;
@@ -51,6 +53,15 @@ function ensureOffscreenSafely() {
   });
 }
 
+function scheduleOffscreenWatchdog() {
+  chrome.alarms.create(OFFSCREEN_WATCHDOG_ALARM, { periodInMinutes: OFFSCREEN_WATCHDOG_MINUTES });
+}
+
+function bootstrapOffscreen() {
+  scheduleOffscreenWatchdog();
+  ensureOffscreenSafely();
+}
+
 async function appendBridgeLog(item: LogRecord) {
   try {
     const data = await chrome.storage.local.get(BRIDGE_LOGS_KEY);
@@ -81,15 +92,25 @@ async function getStorageSnapshot() {
 }
 
 chrome.runtime.onStartup.addListener(() => {
-  ensureOffscreenSafely();
+  bootstrapOffscreen();
 });
 
 chrome.runtime.onInstalled.addListener(() => {
+  bootstrapOffscreen();
+});
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name !== OFFSCREEN_WATCHDOG_ALARM) return;
   ensureOffscreenSafely();
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "bridge:ensure-offscreen") {
+    ensureOffscreenSafely();
+    return;
+  }
+
+  if (message?.type === "bridge:offscreen-unloading") {
     ensureOffscreenSafely();
     return;
   }
@@ -112,4 +133,4 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 });
 
-ensureOffscreenSafely();
+bootstrapOffscreen();
