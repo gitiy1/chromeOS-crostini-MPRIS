@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Crostini MPRIS Bridge Debug</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Crostini MPRIS Bridge</h1>
+      <section>
+        <div>Health: <span id="health">idle</span></div>
+        <label>
+          Base URL
+          <input id="baseUrl" type="text" placeholder="http://penguin.linux.test:5000" />
+        </label>
+        <div class="row">
+          <button id="saveBaseUrl">保存地址</button>
+          <button id="ping">测试 /healthz</button>
+        </div>
+      </section>
+
+      <section>
+        <h2>状态</h2>
+        <div id="status" class="panel">暂无状态</div>
+      </section>
+
+      <section>
+        <div class="row between">
+          <h2>日志</h2>
+          <button id="clearLogs">清空</button>
+        </div>
+        <pre id="logs" class="panel">(no logs)</pre>
+      </section>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
