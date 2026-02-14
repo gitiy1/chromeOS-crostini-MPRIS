@@ -33,6 +33,19 @@
             <option value="">(未发现播放器)</option>
           </select>
         </label>
+        <label>
+          播放器选择模式
+          <select id="playerMode">
+            <option value="auto">自动（优先活跃播放器）</option>
+            <option value="manual">手动指定</option>
+          </select>
+        </label>
+        <label>
+          指定播放器
+          <select id="playerSelect">
+            <option value="">(未发现播放器)</option>
+          </select>
+        </label>
         <div class="row">
           <button id="saveBaseUrl">保存地址</button>
           <button id="ping">测试 /healthz</button>
