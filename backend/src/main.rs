@@ -2,7 +2,7 @@ mod model;
 mod mpris_bridge;
 mod state;
 
-use std::{net::SocketAddr, path::PathBuf, time::Duration};
+use std::{net::SocketAddr, time::Duration};
 
 use axum::{
     extract::{Path, Query, State},
@@ -201,25 +201,43 @@ async fn proxy_art(Query(query): Query<ArtQuery>) -> impl IntoResponse {
         Err(_) => return (StatusCode::NOT_FOUND, "artwork not found").into_response(),
     };
 
-    if !is_user_file(&canonical) {
-        return (StatusCode::FORBIDDEN, "path not allowed").into_response();
-    }
-
     match tokio::fs::read(canonical).await {
-        Ok(bytes) => (
-            [(header::CONTENT_TYPE, HeaderValue::from_static("image/*"))],
-            bytes,
-        )
-            .into_response(),
+        Ok(bytes) => {
+            let Some(mime) = detect_image_mime(&bytes) else {
+                return (
+                    StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                    "src is not an image file",
+                )
+                    .into_response();
+            };
+
+            let Ok(content_type) = HeaderValue::from_str(mime) else {
+                return (StatusCode::INTERNAL_SERVER_ERROR, "invalid image mime").into_response();
+            };
+
+            ([(header::CONTENT_TYPE, content_type)], bytes).into_response()
+        }
         Err(_) => (StatusCode::NOT_FOUND, "artwork not found").into_response(),
     }
 }
 
-fn is_user_file(path: &PathBuf) -> bool {
-    let Some(home) = std::env::var_os("HOME") else {
-        return false;
-    };
-    path.starts_with(home)
+fn detect_image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if let Some(kind) = infer::get(bytes) {
+        let mime = kind.mime_type();
+        if mime.starts_with("image/") {
+            return Some(mime);
+        }
+    }
+
+    detect_svg_mime(bytes)
+}
+
+fn detect_svg_mime(bytes: &[u8]) -> Option<&'static str> {
+    let text = std::str::from_utf8(bytes).ok()?.trim_start();
+    if text.starts_with("<svg") || text.starts_with("<?xml") && text.contains("<svg") {
+        return Some("image/svg+xml");
+    }
+    None
 }
 
 async fn pna_middleware(req: axum::http::Request<axum::body::Body>, next: Next) -> Response {
