@@ -28,7 +28,7 @@ cargo run --release
 
 环境变量：
 
-- `BIND_ADDR`（默认 `0.0.0.0:5000`）
+- `BIND_ADDR`（默认 `0.0.0.0:5167`）
 - `POLL_INTERVAL_MS`（默认 `500`，最小 200）
 
 ## 前端（Bun + MV3）
@@ -43,7 +43,7 @@ bun run build
 
 ### 可选配置
 
-扩展支持 `chrome.storage.local.baseUrl` 覆盖后端地址（默认 `http://penguin.linux.test:5000`）。
+扩展支持 `chrome.storage.local.baseUrl` 覆盖后端地址（默认 `http://penguin.linux.test:5167`）。
 
 ## systemd 用户服务（容器内）
 
@@ -58,6 +58,7 @@ bun run build
 - 查看当前播放器、曲目信息、播放状态、进度
 - 查看 Offscreen 日志（SSE 连接、控制指令、错误）
 - 在线修改 `baseUrl` 并立即生效
+- 多播放器时可在 panel 里切换“自动选择”或“手动指定播放器”
 - 点击“测试 /healthz”快速验证后端连通性
 
 调试数据写入 `chrome.storage.local`：
