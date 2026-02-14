@@ -37,6 +37,10 @@ const DEFAULT_BASE_URL = "http://penguin.linux.test:5000";
 const BRIDGE_DEBUG_KEY = "bridgeDebug";
 const BRIDGE_LOGS_KEY = "bridgeLogs";
 const LOG_LIMIT = 200;
+const KEEPALIVE_SAMPLE_RATE = 44_100;
+const KEEPALIVE_DURATION_SECONDS = 2;
+const KEEPALIVE_FREQUENCY = 220;
+const KEEPALIVE_AMPLITUDE = 2;
 
 let currentBaseUrl = DEFAULT_BASE_URL;
 let eventSource: EventSource | null = null;
@@ -51,12 +55,55 @@ let bridgeDebug: BridgeDebugState = {
 let bridgeLogs: LogRecord[] = [];
 
 const audio = new Audio();
-audio.autoplay = false;
-audio.muted = true;
-audio.volume = 0;
+audio.autoplay = true;
+audio.loop = true;
+audio.preload = "auto";
+audio.volume = 1;
+audio.src = createKeepaliveWavUrl();
 
-let focusAudioReady = false;
-let audioContext: AudioContext | null = null;
+
+function createKeepaliveWavUrl(): string {
+  const channels = 1;
+  const bitsPerSample = 16;
+  const blockAlign = channels * (bitsPerSample / 8);
+  const byteRate = KEEPALIVE_SAMPLE_RATE * blockAlign;
+  const totalSamples = KEEPALIVE_SAMPLE_RATE * KEEPALIVE_DURATION_SECONDS;
+  const dataSize = totalSamples * blockAlign;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+
+  const writeAscii = (offset: number, value: string) => {
+    for (let i = 0; i < value.length; i += 1) {
+      view.setUint8(offset + i, value.charCodeAt(i));
+    }
+  };
+
+  writeAscii(0, "RIFF");
+  view.setUint32(4, 36 + dataSize, true);
+  writeAscii(8, "WAVE");
+  writeAscii(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, channels, true);
+  view.setUint32(24, KEEPALIVE_SAMPLE_RATE, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitsPerSample, true);
+  writeAscii(36, "data");
+  view.setUint32(40, dataSize, true);
+
+  let offset = 44;
+  for (let i = 0; i < totalSamples; i += 1) {
+    const sample = Math.round(
+      KEEPALIVE_AMPLITUDE * Math.sin((2 * Math.PI * KEEPALIVE_FREQUENCY * i) / KEEPALIVE_SAMPLE_RATE),
+    );
+    view.setInt16(offset, sample, true);
+    offset += 2;
+  }
+
+  const blob = new Blob([buffer], { type: "audio/wav" });
+  return URL.createObjectURL(blob);
+}
 
 function hasStorageApi(): boolean {
   return typeof chrome !== "undefined" && !!chrome.storage?.local;
@@ -173,31 +220,13 @@ async function loadDebugData() {
   await saveLogs();
 }
 
-async function initFocusAudio() {
-  if (focusAudioReady) return;
+async function ensureKeepaliveAudio() {
+  if (!audio.paused) return;
 
-  if (typeof AudioContext === "undefined") {
-    log("warn", "AudioContext API unavailable; media controls may not appear reliably");
-    return;
-  }
-
-  audioContext = new AudioContext();
-  const oscillator = audioContext.createOscillator();
-  const gainNode = audioContext.createGain();
-  const destination = audioContext.createMediaStreamDestination();
-
-  oscillator.type = "sine";
-  oscillator.frequency.value = 220;
-  gainNode.gain.value = 0.00001;
-
-  oscillator.connect(gainNode);
-  gainNode.connect(destination);
-
-  audio.srcObject = destination.stream;
-  oscillator.start();
-
-  focusAudioReady = true;
-  log("info", "focus audio initialized with WebAudio stream");
+  await audio.play().catch((error) => {
+    log("warn", `failed to start keepalive audio: ${String(error)}`);
+    return undefined;
+  });
 }
 
 function setPlaybackState(state: PlaybackStatus) {
@@ -271,29 +300,6 @@ function registerActionHandlers() {
   }
 }
 
-async function ensureAudioFocus(active: boolean) {
-  await initFocusAudio();
-  if (!focusAudioReady) return;
-
-  if (active) {
-    if (audioContext?.state === "suspended") {
-      await audioContext.resume().catch(() => undefined);
-    }
-
-    if (audio.paused) {
-      await audio.play().catch((error) => {
-        log("warn", `failed to start focus audio: ${String(error)}`);
-        return undefined;
-      });
-    }
-  } else {
-    audio.pause();
-    if (audioContext?.state === "running") {
-      await audioContext.suspend().catch(() => undefined);
-    }
-  }
-}
-
 async function applyState(state: BridgeState) {
   setMetadata(state);
   updatePosition(state);
@@ -302,7 +308,7 @@ async function applyState(state: BridgeState) {
     state.playbackStatus === "playing" ? "playing" : state.playbackStatus === "paused" ? "paused" : "none";
 
   setPlaybackState(playbackState);
-  await ensureAudioFocus(playbackState !== "none");
+  await ensureKeepaliveAudio();
 
   bridgeDebug = {
     ...bridgeDebug,
@@ -358,6 +364,16 @@ function addLifecycleLogs() {
 
 async function boot() {
   log("info", "offscreen boot start");
+  audio.addEventListener("ended", () => {
+    void ensureKeepaliveAudio();
+  });
+  audio.addEventListener("pause", () => {
+    void ensureKeepaliveAudio();
+  });
+
+  await ensureKeepaliveAudio();
+  log("info", "keepalive audio initialized via generated wav");
+
   addLifecycleLogs();
   await loadDebugData();
   registerActionHandlers();
