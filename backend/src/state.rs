@@ -2,12 +2,17 @@ use std::sync::Arc;
 
 use tokio::sync::{broadcast, RwLock};
 
-use crate::model::BridgeState;
+use crate::model::{BridgeState, PlayerSelection};
 
 #[derive(Clone)]
 pub struct SharedState {
     inner: Arc<RwLock<BridgeState>>,
     tx: broadcast::Sender<BridgeState>,
+}
+
+#[derive(Clone)]
+pub struct SharedSelection {
+    inner: Arc<RwLock<PlayerSelection>>,
 }
 
 impl SharedState {
@@ -33,5 +38,22 @@ impl SharedState {
 
     pub fn subscribe(&self) -> broadcast::Receiver<BridgeState> {
         self.tx.subscribe()
+    }
+}
+
+impl SharedSelection {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(PlayerSelection::default())),
+        }
+    }
+
+    pub async fn update(&self, next: PlayerSelection) {
+        let mut guard = self.inner.write().await;
+        *guard = next;
+    }
+
+    pub async fn snapshot(&self) -> PlayerSelection {
+        self.inner.read().await.clone()
     }
 }
