@@ -254,8 +254,12 @@ function updatePosition(state: BridgeState) {
       const payload: MediaPositionState = {
         duration,
         position: Math.min(position, duration),
-        playbackRate: state.playbackStatus === "playing" ? Math.max(state.playbackRate, 0.1) : 0,
       };
+
+      if (state.playbackStatus === "playing") {
+        payload.playbackRate = Math.max(state.playbackRate, 0.1);
+      }
+
       navigator.mediaSession.setPositionState(payload);
     }
   } catch (error) {
@@ -266,7 +270,7 @@ function updatePosition(state: BridgeState) {
 function startPositionSyncLoop() {
   setInterval(() => {
     const projected = getProjectedState();
-    if (!projected) return;
+    if (!projected || projected.playbackStatus !== "playing") return;
     updatePosition(projected);
   }, POSITION_SYNC_INTERVAL_MS);
 }
