@@ -93,3 +93,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 });
+
+
+chrome.action.onClicked.addListener(() => {
+  void openOrFocusPanelWindow();
+});
+
+chrome.commands.onCommand.addListener((command) => {
+  if (command === "open-panel") {
+    void openOrFocusPanelWindow();
+  }
+});
