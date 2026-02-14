@@ -34,8 +34,6 @@ interface LogRecord {
 }
 
 const DEFAULT_BASE_URL = "http://penguin.linux.test:5000";
-const SILENCE_MP3 =
-  "data:audio/mp3;base64,SUQzAwAAAAAAFlRFTkMAAAASAAAAAAABAAACcQCAgICAgICAgP/7kMQAAANIAAAAAExBTUUzLjk4LjIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const BRIDGE_DEBUG_KEY = "bridgeDebug";
 const BRIDGE_LOGS_KEY = "bridgeLogs";
 const LOG_LIMIT = 200;
@@ -52,9 +50,40 @@ let bridgeDebug: BridgeDebugState = {
 };
 let bridgeLogs: LogRecord[] = [];
 
-const audio = new Audio(SILENCE_MP3);
-audio.loop = true;
+const audio = new Audio();
+audio.autoplay = false;
+audio.muted = true;
 audio.volume = 0;
+
+let focusAudioReady = false;
+let audioContext: AudioContext | null = null;
+
+async function initFocusAudio() {
+  if (focusAudioReady) return;
+
+  if (typeof AudioContext === "undefined") {
+    await log("warn", "AudioContext API unavailable; media controls may not appear reliably");
+    return;
+  }
+
+  audioContext = new AudioContext();
+  const oscillator = audioContext.createOscillator();
+  const gainNode = audioContext.createGain();
+  const destination = audioContext.createMediaStreamDestination();
+
+  oscillator.type = "sine";
+  oscillator.frequency.value = 220;
+  gainNode.gain.value = 0.00001;
+
+  oscillator.connect(gainNode);
+  gainNode.connect(destination);
+
+  audio.srcObject = destination.stream;
+  oscillator.start();
+
+  focusAudioReady = true;
+  await log("info", "focus audio initialized with WebAudio stream");
+}
 
 function hasStorageApi(): boolean {
   return typeof chrome !== "undefined" && !!chrome.storage?.local;
@@ -197,12 +226,26 @@ function registerActionHandlers() {
 }
 
 async function ensureAudioFocus(active: boolean) {
+  await initFocusAudio();
+
+  if (!focusAudioReady) return;
+
   if (active) {
+    if (audioContext?.state === "suspended") {
+      await audioContext.resume().catch(() => undefined);
+    }
+
     if (audio.paused) {
-      await audio.play().catch(() => undefined);
+      await audio.play().catch((error) => {
+        void log("warn", `failed to start focus audio: ${String(error)}`);
+        return undefined;
+      });
     }
   } else {
     audio.pause();
+    if (audioContext?.state === "running") {
+      await audioContext.suspend().catch(() => undefined);
+    }
   }
 }
 
