@@ -48,8 +48,6 @@ const DEFAULT_BASE_URL = "http://penguin.linux.test:5000";
 const BRIDGE_DEBUG_KEY = "bridgeDebug";
 const BRIDGE_LOGS_KEY = "bridgeLogs";
 const LOG_LIMIT = 200;
-const KEEPALIVE_FREQUENCY = 220;
-const KEEPALIVE_GAIN = 0.00001;
 const POSITION_SYNC_INTERVAL_MS = 1000;
 const DEFAULT_SEEK_OFFSET_SECONDS = 10;
 
@@ -64,7 +62,6 @@ let bridgeDebug: BridgeDebugState = {
   lastState: null,
 };
 let bridgeLogs: LogRecord[] = [];
-let keepaliveAudioContext: AudioContext | null = null;
 let latestState: BridgeState | null = null;
 let latestStateAtMs = 0;
 let isShuttingDown = false;
@@ -306,61 +303,6 @@ async function loadDebugData() {
   renderPanel();
 }
 
-async function ensureKeepaliveAudio() {
-  if (typeof AudioContext === "undefined") {
-    log("warn", "AudioContext unavailable; keepalive audio cannot start");
-    return;
-  }
-
-  if (!keepaliveAudioContext) {
-    keepaliveAudioContext = new AudioContext();
-    const oscillator = keepaliveAudioContext.createOscillator();
-    const gainNode = keepaliveAudioContext.createGain();
-
-    oscillator.type = "sine";
-    oscillator.frequency.value = KEEPALIVE_FREQUENCY;
-    gainNode.gain.value = KEEPALIVE_GAIN;
-
-    oscillator.connect(gainNode);
-    gainNode.connect(keepaliveAudioContext.destination);
-    oscillator.start();
-  }
-
-  if (keepaliveAudioContext.state === "suspended") {
-    await keepaliveAudioContext.resume().catch((error) => {
-      log("warn", `failed to resume keepalive audio context: ${String(error)}`);
-      return undefined;
-    });
-  }
-}
-
-async function syncKeepaliveAudioForPlayback(playbackState: PlaybackStatus) {
-  if (!keepaliveAudioContext) {
-    if (playbackState !== "playing") {
-      return;
-    }
-    await ensureKeepaliveAudio();
-    return;
-  }
-
-  if (playbackState === "playing") {
-    if (keepaliveAudioContext.state === "suspended") {
-      await keepaliveAudioContext.resume().catch((error) => {
-        log("warn", `failed to resume keepalive audio context: ${String(error)}`);
-        return undefined;
-      });
-    }
-    return;
-  }
-
-  if (keepaliveAudioContext.state === "running") {
-    await keepaliveAudioContext.suspend().catch((error) => {
-      log("warn", `failed to suspend keepalive audio context: ${String(error)}`);
-      return undefined;
-    });
-  }
-}
-
 function setPlaybackState(state: PlaybackStatus) {
   if (!("mediaSession" in navigator)) return;
   navigator.mediaSession.playbackState = state;
@@ -554,7 +496,6 @@ async function applyState(state: BridgeState) {
     state.playbackStatus === "playing" ? "playing" : state.playbackStatus === "paused" ? "paused" : "none";
 
   setPlaybackState(playbackState);
-  await syncKeepaliveAudioForPlayback(playbackState);
 
   bridgeDebug = {
     ...bridgeDebug,
