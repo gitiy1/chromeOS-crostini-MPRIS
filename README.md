@@ -48,3 +48,20 @@ bun run build
 ## systemd 用户服务（容器内）
 
 `docs/crostini-mpris-bridge.service` 提供开机自启模板。
+
+
+## 调试方式（推荐）
+
+点击扩展图标会打开内置调试面板（popup），可用于：
+
+- 查看桥接健康状态（idle/connecting/connected/error）
+- 查看当前播放器、曲目信息、播放状态、进度
+- 查看 Offscreen 日志（SSE 连接、控制指令、错误）
+- 在线修改 `baseUrl` 并立即生效
+- 点击“测试 /healthz”快速验证后端连通性
+
+调试数据写入 `chrome.storage.local`：
+
+- `bridgeDebug`：当前状态快照
+- `bridgeLogs`：最近 200 条日志
+- `baseUrl`：后端地址

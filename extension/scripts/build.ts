@@ -14,7 +14,7 @@ async function buildOnce() {
   cpSync(publicDir, distDir, { recursive: true });
 
   await Bun.build({
-    entrypoints: [join(srcDir, "background.ts"), join(srcDir, "offscreen.ts")],
+    entrypoints: [join(srcDir, "background.ts"), join(srcDir, "offscreen.ts"), join(srcDir, "popup.ts")],
     outdir: distDir,
     target: "browser",
     format: "esm",
