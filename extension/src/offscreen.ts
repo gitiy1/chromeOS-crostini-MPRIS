@@ -124,7 +124,27 @@ async function setHealth(health: BridgeHealth, error?: string) {
 
 async function loadDebugData() {
   if (!hasStorageApi()) {
-    log("warn", "chrome.storage.local unavailable in offscreen context");
+    const reply = await chrome.runtime.sendMessage({ type: "bridge:get-storage-snapshot" }).catch(() => null);
+    if (reply?.ok && reply.payload) {
+      currentBaseUrl = reply.payload.baseUrl ?? DEFAULT_BASE_URL;
+
+      if (Array.isArray(reply.payload.bridgeLogs)) {
+        bridgeLogs = reply.payload.bridgeLogs.slice(-LOG_LIMIT);
+      }
+
+      if (reply.payload.bridgeDebug && typeof reply.payload.bridgeDebug === "object") {
+        bridgeDebug = {
+          ...bridgeDebug,
+          ...reply.payload.bridgeDebug,
+          baseUrl: currentBaseUrl,
+        };
+      }
+
+      syncDebugToBackground();
+      log("info", "loaded debug snapshot via background relay");
+    } else {
+      log("warn", "storage unavailable in offscreen; using runtime defaults");
+    }
     return;
   }
 

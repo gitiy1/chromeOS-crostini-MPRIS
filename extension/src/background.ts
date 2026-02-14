@@ -1,6 +1,7 @@
 const OFFSCREEN_URL = "offscreen.html";
 const BRIDGE_DEBUG_KEY = "bridgeDebug";
 const BRIDGE_LOGS_KEY = "bridgeLogs";
+const BASE_URL_KEY = "baseUrl";
 const LOG_LIMIT = 200;
 
 interface LogRecord {
@@ -70,6 +71,15 @@ async function updateBridgeDebug(debug: unknown) {
   }
 }
 
+async function getStorageSnapshot() {
+  const data = await chrome.storage.local.get([BASE_URL_KEY, BRIDGE_DEBUG_KEY, BRIDGE_LOGS_KEY]);
+  return {
+    baseUrl: data[BASE_URL_KEY],
+    bridgeDebug: data[BRIDGE_DEBUG_KEY],
+    bridgeLogs: data[BRIDGE_LOGS_KEY],
+  };
+}
+
 chrome.runtime.onStartup.addListener(() => {
   ensureOffscreenSafely();
 });
@@ -78,7 +88,7 @@ chrome.runtime.onInstalled.addListener(() => {
   ensureOffscreenSafely();
 });
 
-chrome.runtime.onMessage.addListener((message) => {
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "bridge:ensure-offscreen") {
     ensureOffscreenSafely();
     return;
@@ -91,6 +101,14 @@ chrome.runtime.onMessage.addListener((message) => {
 
   if (message?.type === "bridge:update-debug" && message.payload) {
     void updateBridgeDebug(message.payload);
+    return;
+  }
+
+  if (message?.type === "bridge:get-storage-snapshot") {
+    void getStorageSnapshot()
+      .then((payload) => sendResponse({ ok: true, payload }))
+      .catch((error) => sendResponse({ ok: false, error: String(error) }));
+    return true;
   }
 });
 
