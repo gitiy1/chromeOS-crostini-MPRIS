@@ -57,6 +57,9 @@ let bridgeLogs: LogRecord[] = [];
 let keepaliveAudioContext: AudioContext | null = null;
 let latestState: BridgeState | null = null;
 let latestStateAtMs = 0;
+let isShuttingDown = false;
+let positionSyncTimer: number | null = null;
+let reconnectTimer: number | null = null;
 
 function hasStorageApi(): boolean {
   return typeof chrome !== "undefined" && !!chrome.storage?.local;
@@ -67,13 +70,33 @@ function pushLocalLog(item: LogRecord) {
 }
 
 function syncLogToBackground(item: LogRecord) {
-  if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) return;
-  void chrome.runtime.sendMessage({ type: "bridge:append-log", payload: item }).catch(() => undefined);
+  if (isShuttingDown) return;
+  void sendMessageSafe({ type: "bridge:append-log", payload: item });
 }
 
 function syncDebugToBackground() {
-  if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) return;
-  void chrome.runtime.sendMessage({ type: "bridge:update-debug", payload: bridgeDebug }).catch(() => undefined);
+  if (isShuttingDown) return;
+  void sendMessageSafe({ type: "bridge:update-debug", payload: bridgeDebug });
+}
+
+function sendMessageSafe(message: unknown) {
+  if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
+    return Promise.resolve(null);
+  }
+
+  try {
+    return chrome.runtime.sendMessage(message).catch((error) => {
+      if (String(error).includes("Extension context invalidated")) {
+        return null;
+      }
+      return null;
+    });
+  } catch (error) {
+    if (String(error).includes("Extension context invalidated")) {
+      return Promise.resolve(null);
+    }
+    return Promise.resolve(null);
+  }
 }
 
 async function saveDebugState() {
@@ -124,7 +147,7 @@ async function setHealth(health: BridgeHealth, error?: string) {
 
 async function loadDebugData() {
   if (!hasStorageApi()) {
-    const reply = await chrome.runtime.sendMessage({ type: "bridge:get-storage-snapshot" }).catch(() => null);
+    const reply = await sendMessageSafe({ type: "bridge:get-storage-snapshot" });
     if (reply?.ok && reply.payload) {
       currentBaseUrl = reply.payload.baseUrl ?? DEFAULT_BASE_URL;
 
@@ -268,7 +291,12 @@ function updatePosition(state: BridgeState) {
 }
 
 function startPositionSyncLoop() {
-  setInterval(() => {
+  if (positionSyncTimer !== null) {
+    window.clearInterval(positionSyncTimer);
+  }
+
+  positionSyncTimer = window.setInterval(() => {
+    if (isShuttingDown) return;
     const projected = getProjectedState();
     if (!projected || projected.playbackStatus !== "playing") return;
     updatePosition(projected);
@@ -404,7 +432,14 @@ async function applyState(state: BridgeState) {
 }
 
 function connectEvents() {
+  if (isShuttingDown) return;
+
   eventSource?.close();
+  if (reconnectTimer !== null) {
+    window.clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+
   void setHealth("connecting");
   log("info", `connecting to SSE: ${currentBaseUrl}/events`);
 
@@ -421,21 +456,41 @@ function connectEvents() {
   });
 
   eventSource.onerror = (event) => {
+    if (isShuttingDown) return;
+
     const detail = `SSE error (${event.type})`;
     void setHealth("error", detail);
     log("warn", detail);
     eventSource?.close();
-    setTimeout(connectEvents, 1500);
+
+    reconnectTimer = window.setTimeout(connectEvents, 1500);
   };
+}
+
+function cleanup() {
+  isShuttingDown = true;
+  eventSource?.close();
+
+  if (positionSyncTimer !== null) {
+    window.clearInterval(positionSyncTimer);
+    positionSyncTimer = null;
+  }
+
+  if (reconnectTimer !== null) {
+    window.clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
 }
 
 function addLifecycleLogs() {
   window.addEventListener("pagehide", () => {
-    log("warn", "panel pagehide fired");
+    console.warn("[bridge] panel pagehide fired");
+    cleanup();
   });
 
   window.addEventListener("beforeunload", () => {
-    log("warn", "panel beforeunload fired");
+    console.warn("[bridge] panel beforeunload fired");
+    cleanup();
   });
 
   document.addEventListener("visibilitychange", () => {
