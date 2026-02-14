@@ -64,6 +64,7 @@ async fn main() {
         .route("/state", get(get_state))
         .route("/events", get(sse_events))
         .route("/control/:action", post(control))
+        .route("/control/seek", post(control_seek))
         .route("/art", get(proxy_art))
         .with_state(app_state)
         .layer(middleware::from_fn(pna_middleware))
@@ -110,6 +111,29 @@ async fn control(Path(action): Path<String>) -> impl IntoResponse {
         "previous" | "prev" => ControlAction::Previous,
         "stop" => ControlAction::Stop,
         _ => return (StatusCode::BAD_REQUEST, "unknown action").into_response(),
+    };
+
+    match perform_action(action) {
+        Ok(_) => (StatusCode::OK, "ok").into_response(),
+        Err(err) => (StatusCode::BAD_GATEWAY, err.to_string()).into_response(),
+    }
+}
+
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SeekQuery {
+    position_us: Option<u64>,
+    offset_us: Option<i64>,
+}
+
+async fn control_seek(Query(query): Query<SeekQuery>) -> impl IntoResponse {
+    let action = if let Some(position_us) = query.position_us {
+        ControlAction::SeekTo(position_us)
+    } else if let Some(offset_us) = query.offset_us {
+        ControlAction::SeekBy(offset_us)
+    } else {
+        return (StatusCode::BAD_REQUEST, "missing positionUs or offsetUs").into_response();
     };
 
     match perform_action(action) {

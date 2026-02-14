@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "description": "Bridge ChromeOS media controls to Crostini MPRIS players.",
   "permissions": [
-    "offscreen",
-    "storage"
+    "storage",
+    "windows"
   ],
   "host_permissions": [
     "http://penguin.linux.test:5000/*",
@@ -17,7 +17,15 @@
     "type": "module"
   },
   "action": {
-    "default_title": "Crostini MPRIS Bridge",
-    "default_popup": "popup.html"
+    "default_title": "Crostini MPRIS Bridge (open panel)"
+  },
+  "options_page": "panel.html",
+  "commands": {
+    "open-panel": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Y"
+      },
+      "description": "Open or focus Crostini MPRIS panel"
+    }
   }
 }

@@ -1,8 +1,8 @@
-const OFFSCREEN_URL = "offscreen.html";
 const BRIDGE_DEBUG_KEY = "bridgeDebug";
 const BRIDGE_LOGS_KEY = "bridgeLogs";
 const BASE_URL_KEY = "baseUrl";
 const LOG_LIMIT = 200;
+const PANEL_URL = "panel.html";
 
 interface LogRecord {
   at: number;
@@ -10,45 +10,27 @@ interface LogRecord {
   message: string;
 }
 
-let creatingOffscreen: Promise<void> | null = null;
+let panelWindowId: number | null = null;
 
-function isOffscreenAlreadyExistsError(error: unknown): boolean {
-  return error instanceof Error && error.message.includes("Only a single offscreen document may be created");
-}
-
-async function hasOffscreenDocument(): Promise<boolean> {
-  const contexts = await chrome.runtime.getContexts({
-    contextTypes: ["OFFSCREEN_DOCUMENT"],
-  });
-  return contexts.length > 0;
-}
-
-async function ensureOffscreenDocument() {
-  if (await hasOffscreenDocument()) return;
-  if (creatingOffscreen) return creatingOffscreen;
-
-  creatingOffscreen = (async () => {
-    if (await hasOffscreenDocument()) return;
+async function openOrFocusPanelWindow() {
+  if (panelWindowId !== null) {
     try {
-      await chrome.offscreen.createDocument({
-        url: OFFSCREEN_URL,
-        reasons: ["AUDIO_PLAYBACK"],
-        justification: "Need a persistent Media Session for headset buttons",
-      });
-    } catch (error) {
-      if (!isOffscreenAlreadyExistsError(error)) throw error;
+      await chrome.windows.update(panelWindowId, { focused: true });
+      return;
+    } catch {
+      panelWindowId = null;
     }
-  })().finally(() => {
-    creatingOffscreen = null;
+  }
+
+  const created = await chrome.windows.create({
+    url: chrome.runtime.getURL(PANEL_URL),
+    type: "popup",
+    width: 480,
+    height: 760,
+    focused: true,
   });
 
-  return creatingOffscreen;
-}
-
-function ensureOffscreenSafely() {
-  void ensureOffscreenDocument().catch((error) => {
-    console.error("failed to ensure offscreen document", error);
-  });
+  panelWindowId = created.id ?? null;
 }
 
 async function appendBridgeLog(item: LogRecord) {
@@ -80,18 +62,18 @@ async function getStorageSnapshot() {
   };
 }
 
-chrome.runtime.onStartup.addListener(() => {
-  ensureOffscreenSafely();
-});
-
-chrome.runtime.onInstalled.addListener(() => {
-  ensureOffscreenSafely();
+chrome.windows.onRemoved.addListener((windowId) => {
+  if (windowId === panelWindowId) {
+    panelWindowId = null;
+  }
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type === "bridge:ensure-offscreen") {
-    ensureOffscreenSafely();
-    return;
+  if (message?.type === "bridge:open-panel") {
+    void openOrFocusPanelWindow()
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: String(error) }));
+    return true;
   }
 
   if (message?.type === "bridge:append-log" && message.payload) {
@@ -112,4 +94,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 });
 
-ensureOffscreenSafely();
+
+chrome.action.onClicked.addListener(() => {
+  void openOrFocusPanelWindow();
+});
+
+chrome.commands.onCommand.addListener((command) => {
+  if (command === "open-panel") {
+    void openOrFocusPanelWindow();
+  }
+});

@@ -32,6 +32,7 @@ const el = {
   baseUrl: document.querySelector<HTMLInputElement>("#baseUrl")!,
   saveBtn: document.querySelector<HTMLButtonElement>("#saveBaseUrl")!,
   pingBtn: document.querySelector<HTMLButtonElement>("#ping")!,
+  openPanelBtn: document.querySelector<HTMLButtonElement>("#openPanel")!,
   status: document.querySelector<HTMLDivElement>("#status")!,
   logs: document.querySelector<HTMLPreElement>("#logs")!,
   clearLogs: document.querySelector<HTMLButtonElement>("#clearLogs")!,
@@ -140,3 +141,8 @@ chrome.storage.onChanged.addListener(() => {
 });
 
 void loadAndRender();
+
+
+el.openPanelBtn.addEventListener("click", () => {
+  void chrome.runtime.sendMessage({ type: "bridge:open-panel" });
+});
