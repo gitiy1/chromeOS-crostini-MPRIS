@@ -34,6 +34,8 @@ pub fn perform_action(action: ControlAction) -> anyhow::Result<()> {
         ControlAction::Next => player.next()?,
         ControlAction::Previous => player.previous()?,
         ControlAction::Stop => player.stop()?,
+        ControlAction::SeekTo(position_us) => seek_to_position(&player, position_us)?,
+        ControlAction::SeekBy(offset_us) => player.seek(offset_us)?,
     }
     Ok(())
 }
@@ -109,6 +111,7 @@ fn player_to_state(player: &Player) -> BridgeState {
         can_go_previous: player.can_go_previous().unwrap_or(false),
         can_play: player.can_play().unwrap_or(false),
         can_pause: player.can_pause().unwrap_or(false),
+        can_seek: player.can_seek().unwrap_or(false),
         updated_at_ms: now_ms(),
     }
 }
@@ -126,4 +129,15 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+
+fn seek_to_position(player: &Player, position_us: u64) -> anyhow::Result<()> {
+    let metadata = player.get_metadata().ok();
+    let track_id = metadata
+        .and_then(|m| m.track_id())
+        .ok_or_else(|| anyhow::anyhow!("track_id not available for seek"))?;
+
+    player.set_position_in_microseconds(track_id, position_us)?;
+    Ok(())
 }
