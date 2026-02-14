@@ -58,6 +58,7 @@ bun run build
 - 查看当前播放器、曲目信息、播放状态、进度
 - 查看 Offscreen 日志（SSE 连接、控制指令、错误）
 - 在线修改 `baseUrl` 并立即生效
+- 多播放器时可在 panel 里切换“自动选择”或“手动指定播放器”
 - 点击“测试 /healthz”快速验证后端连通性
 
 调试数据写入 `chrome.storage.local`：
