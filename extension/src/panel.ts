@@ -1,5 +1,10 @@
 type PlaybackStatus = "playing" | "paused" | "none";
 
+interface PlayerDescriptor {
+  busName: string;
+  playerName: string;
+}
+
 interface BridgeState {
   playerName: string;
   playbackStatus: "playing" | "paused" | "stopped" | "none";
@@ -15,6 +20,10 @@ interface BridgeState {
   canPlay: boolean;
   canPause: boolean;
   canSeek: boolean;
+  activePlayerBusName: string | null;
+  selectionMode: "auto" | "manual";
+  selectedPlayerBusName: string | null;
+  availablePlayers: PlayerDescriptor[];
 }
 
 type BridgeHealth = "idle" | "connecting" | "connected" | "error";
@@ -43,8 +52,10 @@ interface PanelElements {
   status: HTMLDivElement;
   logs: HTMLPreElement;
   clearLogs: HTMLButtonElement;
+  playerMode: HTMLSelectElement;
+  playerSelect: HTMLSelectElement;
 }
-const DEFAULT_BASE_URL = "http://penguin.linux.test:5000";
+const DEFAULT_BASE_URL = "http://penguin.linux.test:5167";
 const BRIDGE_DEBUG_KEY = "bridgeDebug";
 const BRIDGE_LOGS_KEY = "bridgeLogs";
 const LOG_LIMIT = 200;
@@ -80,11 +91,56 @@ const el: PanelElements = {
   status: document.querySelector<HTMLDivElement>("#status")!,
   logs: document.querySelector<HTMLPreElement>("#logs")!,
   clearLogs: document.querySelector<HTMLButtonElement>("#clearLogs")!,
+  playerMode: document.querySelector<HTMLSelectElement>("#playerMode")!,
+  playerSelect: document.querySelector<HTMLSelectElement>("#playerSelect")!,
 };
+
+
+function removeDuplicateSelectorNodes(selector: string) {
+  const nodes = Array.from(document.querySelectorAll(selector));
+  if (nodes.length <= 1) {
+    return;
+  }
+
+  for (const node of nodes.slice(1)) {
+    const container = node.closest("label") ?? node;
+    container.remove();
+  }
+
+  log("warn", `removed duplicated selector nodes for ${selector}`);
+}
+
+function dedupePlayerSelectors() {
+  removeDuplicateSelectorNodes("#playerMode");
+  removeDuplicateSelectorNodes("#playerSelect");
+}
 
 function formatTs(value: number | null): string {
   if (!value) return "-";
   return new Date(value).toLocaleString();
+}
+
+
+function renderPlayerSelectors(state: BridgeState | null) {
+  const mode = state?.selectionMode ?? "auto";
+  if (document.activeElement !== el.playerMode) {
+    el.playerMode.value = mode;
+  }
+
+  const players = state?.availablePlayers ?? [];
+  const selectedBus = state?.selectedPlayerBusName ?? "";
+  const activeBus = state?.activePlayerBusName ?? "";
+
+  const options = players
+    .map((player) => {
+      const activeTag = player.busName === activeBus ? "（当前）" : "";
+      return `<option value="${player.busName}">${player.playerName} ${activeTag}</option>`;
+    })
+    .join("");
+
+  el.playerSelect.innerHTML = options || '<option value="">(未发现播放器)</option>';
+  el.playerSelect.disabled = mode !== "manual" || players.length === 0;
+  el.playerSelect.value = selectedBus || activeBus || players[0]?.busName || "";
 }
 
 function renderPanel() {
@@ -94,6 +150,7 @@ function renderPanel() {
   }
 
   const state = bridgeDebug.lastState;
+  renderPlayerSelectors(state);
   const track = state?.title ? `${state.title} - ${(state.artist || []).join(", ")}` : "(无播放信息)";
   const pos = state
     ? `${(state.positionUs / 1_000_000).toFixed(1)}s / ${((state.durationUs || 0) / 1_000_000).toFixed(1)}s`
@@ -106,6 +163,8 @@ function renderPanel() {
     `last event: ${formatTs(bridgeDebug.lastEventAt)}`,
     `last error: ${bridgeDebug.lastError ?? "-"}`,
     `player: ${state?.playerName ?? "-"}`,
+    `mode: ${state?.selectionMode ?? "auto"}`,
+    `selected: ${state?.selectedPlayerBusName ?? "-"}`,
     `playback: ${state?.playbackStatus ?? "-"}`,
     `track: ${track}`,
     `position: ${pos}`,
@@ -121,6 +180,29 @@ function renderPanel() {
     .reverse()
     .map((item) => `${new Date(item.at).toLocaleTimeString()} [${item.level}] ${item.message}`)
     .join("\n");
+}
+
+
+async function savePlayerSelection(mode: "auto" | "manual", selectedPlayerBusName: string | null) {
+  const payload = {
+    mode,
+    selectedPlayerBusName: selectedPlayerBusName && selectedPlayerBusName.length ? selectedPlayerBusName : null,
+  };
+
+  const res = await fetch(`${currentBaseUrl}/player-selection`, {
+    method: "POST",
+    mode: "cors",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    throw new Error(`save player selection failed: ${res.status}`);
+  }
+
+  log("info", `player selection updated: mode=${mode}, selected=${payload.selectedPlayerBusName ?? "-"}`);
 }
 
 async function pingBackend() {
@@ -148,6 +230,24 @@ function bindPanelUiEvents() {
     bridgeLogs = [];
     void chrome.storage.local.set({ [BRIDGE_LOGS_KEY]: [] });
     renderPanel();
+  });
+
+  el.playerMode.addEventListener("change", () => {
+    const mode = (el.playerMode.value === "manual" ? "manual" : "auto") as "auto" | "manual";
+    const selectedPlayerBusName = mode === "manual" ? el.playerSelect.value : null;
+    void savePlayerSelection(mode, selectedPlayerBusName).catch((error) => {
+      log("error", `save player selection failed: ${String(error)}`);
+    });
+  });
+
+  el.playerSelect.addEventListener("change", () => {
+    if (el.playerMode.value !== "manual") {
+      return;
+    }
+
+    void savePlayerSelection("manual", el.playerSelect.value).catch((error) => {
+      log("error", `save player selection failed: ${String(error)}`);
+    });
   });
 
   chrome.storage.onChanged.addListener((changes) => {
@@ -637,6 +737,7 @@ function addLifecycleLogs() {
 }
 
 async function boot() {
+  dedupePlayerSelectors();
   bindPanelUiEvents();
   renderPanel();
   log("info", "panel boot start");
