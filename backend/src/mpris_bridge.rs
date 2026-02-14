@@ -64,6 +64,7 @@ fn collect_state(selection: &PlayerSelection) -> anyhow::Result<BridgeState> {
 
     let available_players = players
         .iter()
+        .filter(|player| !is_playerctld_player(player))
         .map(|player| PlayerDescriptor {
             bus_name: player.bus_name().to_string(),
             player_name: player.identity().to_string(),
@@ -103,11 +104,13 @@ fn pick_player(
 ) -> Option<Player> {
     if selection.mode == PlayerSelectionMode::Manual {
         if let Some(bus_name) = selection.selected_player_bus_name.as_deref() {
-            if let Some(index) = players
-                .iter()
-                .position(|player| player.bus_name() == bus_name)
-            {
-                return Some(players.swap_remove(index));
+            if !is_playerctld_bus_name(bus_name) {
+                if let Some(index) = players
+                    .iter()
+                    .position(|player| player.bus_name() == bus_name)
+                {
+                    return Some(players.swap_remove(index));
+                }
             }
         }
     }
@@ -221,4 +224,12 @@ fn build_art_proxy_path(src: &str) -> Option<String> {
 
     let encoded = form_urlencoded::byte_serialize(src.as_bytes()).collect::<String>();
     Some(format!("/art?src={encoded}"))
+}
+
+fn is_playerctld_player(player: &Player) -> bool {
+    is_playerctld_bus_name(player.bus_name())
+}
+
+fn is_playerctld_bus_name(bus_name: &str) -> bool {
+    bus_name == "org.mpris.MediaPlayer2.playerctld"
 }
