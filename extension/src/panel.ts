@@ -34,6 +34,16 @@ interface LogRecord {
   message: string;
 }
 
+
+interface PanelElements {
+  health: HTMLSpanElement;
+  baseUrl: HTMLInputElement;
+  saveBtn: HTMLButtonElement;
+  pingBtn: HTMLButtonElement;
+  status: HTMLDivElement;
+  logs: HTMLPreElement;
+  clearLogs: HTMLButtonElement;
+}
 const DEFAULT_BASE_URL = "http://penguin.linux.test:5000";
 const BRIDGE_DEBUG_KEY = "bridgeDebug";
 const BRIDGE_LOGS_KEY = "bridgeLogs";
@@ -60,6 +70,103 @@ let latestStateAtMs = 0;
 let isShuttingDown = false;
 let positionSyncTimer: number | null = null;
 let reconnectTimer: number | null = null;
+
+
+const el: PanelElements = {
+  health: document.querySelector<HTMLSpanElement>("#health")!,
+  baseUrl: document.querySelector<HTMLInputElement>("#baseUrl")!,
+  saveBtn: document.querySelector<HTMLButtonElement>("#saveBaseUrl")!,
+  pingBtn: document.querySelector<HTMLButtonElement>("#ping")!,
+  status: document.querySelector<HTMLDivElement>("#status")!,
+  logs: document.querySelector<HTMLPreElement>("#logs")!,
+  clearLogs: document.querySelector<HTMLButtonElement>("#clearLogs")!,
+};
+
+function formatTs(value: number | null): string {
+  if (!value) return "-";
+  return new Date(value).toLocaleString();
+}
+
+function renderPanel() {
+  el.health.textContent = bridgeDebug.health;
+  if (document.activeElement !== el.baseUrl) {
+    el.baseUrl.value = currentBaseUrl;
+  }
+
+  const state = bridgeDebug.lastState;
+  const track = state?.title ? `${state.title} - ${(state.artist || []).join(", ")}` : "(无播放信息)";
+  const pos = state
+    ? `${(state.positionUs / 1_000_000).toFixed(1)}s / ${((state.durationUs || 0) / 1_000_000).toFixed(1)}s`
+    : "-";
+
+  el.status.textContent = [
+    `health: ${bridgeDebug.health}`,
+    `baseUrl: ${bridgeDebug.baseUrl}`,
+    `last update: ${formatTs(bridgeDebug.lastUpdateAt)}`,
+    `last event: ${formatTs(bridgeDebug.lastEventAt)}`,
+    `last error: ${bridgeDebug.lastError ?? "-"}`,
+    `player: ${state?.playerName ?? "-"}`,
+    `playback: ${state?.playbackStatus ?? "-"}`,
+    `track: ${track}`,
+    `position: ${pos}`,
+  ].join("\n");
+
+  if (!bridgeLogs.length) {
+    el.logs.textContent = "(no logs)";
+    return;
+  }
+
+  el.logs.textContent = bridgeLogs
+    .slice()
+    .reverse()
+    .map((item) => `${new Date(item.at).toLocaleTimeString()} [${item.level}] ${item.message}`)
+    .join("\n");
+}
+
+async function pingBackend() {
+  const baseUrl = el.baseUrl.value.trim() || DEFAULT_BASE_URL;
+  try {
+    const res = await fetch(`${baseUrl}/healthz`, { method: "GET", mode: "cors" });
+    const text = await res.text();
+    log("info", `manual ping ${baseUrl}/healthz -> ${res.status} ${text}`);
+  } catch (error) {
+    log("error", `manual ping failed: ${String(error)}`);
+  }
+}
+
+function bindPanelUiEvents() {
+  el.saveBtn.addEventListener("click", () => {
+    const baseUrl = el.baseUrl.value.trim() || DEFAULT_BASE_URL;
+    void chrome.storage.local.set({ baseUrl });
+  });
+
+  el.pingBtn.addEventListener("click", () => {
+    void pingBackend();
+  });
+
+  el.clearLogs.addEventListener("click", () => {
+    bridgeLogs = [];
+    void chrome.storage.local.set({ [BRIDGE_LOGS_KEY]: [] });
+    renderPanel();
+  });
+
+  chrome.storage.onChanged.addListener((changes) => {
+    if (changes.baseUrl) {
+      currentBaseUrl = changes.baseUrl.newValue ?? DEFAULT_BASE_URL;
+    }
+    if (changes[BRIDGE_LOGS_KEY] && Array.isArray(changes[BRIDGE_LOGS_KEY].newValue)) {
+      bridgeLogs = changes[BRIDGE_LOGS_KEY].newValue.slice(-LOG_LIMIT);
+    }
+    if (changes[BRIDGE_DEBUG_KEY] && changes[BRIDGE_DEBUG_KEY].newValue && typeof changes[BRIDGE_DEBUG_KEY].newValue === "object") {
+      bridgeDebug = {
+        ...bridgeDebug,
+        ...changes[BRIDGE_DEBUG_KEY].newValue,
+      };
+    }
+    renderPanel();
+  });
+}
+
 
 function hasStorageApi(): boolean {
   return typeof chrome !== "undefined" && !!chrome.storage?.local;
@@ -132,6 +239,7 @@ function log(level: LogRecord["level"], message: string) {
   }
 
   void saveLogs();
+  renderPanel();
 }
 
 async function setHealth(health: BridgeHealth, error?: string) {
@@ -143,6 +251,7 @@ async function setHealth(health: BridgeHealth, error?: string) {
     lastUpdateAt: Date.now(),
   };
   await saveDebugState();
+  renderPanel();
 }
 
 async function loadDebugData() {
@@ -194,6 +303,7 @@ async function loadDebugData() {
 
   await saveDebugState();
   await saveLogs();
+  renderPanel();
 }
 
 async function ensureKeepaliveAudio() {
@@ -429,6 +539,7 @@ async function applyState(state: BridgeState) {
     lastState: state,
   };
   await saveDebugState();
+  renderPanel();
 }
 
 function connectEvents() {
@@ -499,6 +610,8 @@ function addLifecycleLogs() {
 }
 
 async function boot() {
+  bindPanelUiEvents();
+  renderPanel();
   log("info", "panel boot start");
   await ensureKeepaliveAudio();
   log("info", "keepalive audio initialized via AudioContext oscillator");
