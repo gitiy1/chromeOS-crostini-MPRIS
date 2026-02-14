@@ -1,35 +1,70 @@
 const OFFSCREEN_URL = "offscreen.html";
+let creatingOffscreen: Promise<void> | null = null;
 
-async function ensureOffscreenDocument() {
-  const url = chrome.runtime.getURL(OFFSCREEN_URL);
+function isOffscreenAlreadyExistsError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return error.message.includes("Only a single offscreen document may be created");
+}
+
+async function hasOffscreenDocument(): Promise<boolean> {
   const contexts = await chrome.runtime.getContexts({
     contextTypes: ["OFFSCREEN_DOCUMENT"],
-    documentUrls: [url],
   });
+  return contexts.length > 0;
+}
 
-  if (contexts.length > 0) {
+async function ensureOffscreenDocument() {
+  if (await hasOffscreenDocument()) {
     return;
   }
 
-  await chrome.offscreen.createDocument({
-    url: OFFSCREEN_URL,
-    reasons: ["AUDIO_PLAYBACK"],
-    justification: "Need a persistent Media Session for headset buttons",
+  if (creatingOffscreen) {
+    return creatingOffscreen;
+  }
+
+  creatingOffscreen = (async () => {
+    if (await hasOffscreenDocument()) {
+      return;
+    }
+
+    try {
+      await chrome.offscreen.createDocument({
+        url: OFFSCREEN_URL,
+        reasons: ["AUDIO_PLAYBACK"],
+        justification: "Need a persistent Media Session for headset buttons",
+      });
+    } catch (error) {
+      if (!isOffscreenAlreadyExistsError(error)) {
+        throw error;
+      }
+    }
+  })().finally(() => {
+    creatingOffscreen = null;
+  });
+
+  return creatingOffscreen;
+}
+
+function ensureOffscreenSafely() {
+  void ensureOffscreenDocument().catch((error) => {
+    console.error("failed to ensure offscreen document", error);
   });
 }
 
 chrome.runtime.onStartup.addListener(() => {
-  void ensureOffscreenDocument();
+  ensureOffscreenSafely();
 });
 
 chrome.runtime.onInstalled.addListener(() => {
-  void ensureOffscreenDocument();
+  ensureOffscreenSafely();
 });
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === "bridge:ensure-offscreen") {
-    void ensureOffscreenDocument();
+    ensureOffscreenSafely();
   }
 });
 
-void ensureOffscreenDocument();
+ensureOffscreenSafely();

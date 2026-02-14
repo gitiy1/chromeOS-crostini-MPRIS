@@ -27,7 +27,16 @@ const audio = new Audio(SILENCE_MP3);
 audio.loop = true;
 audio.volume = 0;
 
+function hasStorageApi(): boolean {
+  return typeof chrome !== "undefined" && !!chrome.storage?.local;
+}
+
 async function loadBaseUrl() {
+  if (!hasStorageApi()) {
+    currentBaseUrl = DEFAULT_BASE_URL;
+    return;
+  }
+
   const { baseUrl } = await chrome.storage.local.get("baseUrl");
   currentBaseUrl = baseUrl ?? DEFAULT_BASE_URL;
 }
@@ -142,11 +151,13 @@ async function boot() {
   connectEvents();
 }
 
-chrome.storage.onChanged.addListener((changes) => {
-  if (changes.baseUrl) {
-    currentBaseUrl = changes.baseUrl.newValue ?? DEFAULT_BASE_URL;
-    connectEvents();
-  }
-});
+if (typeof chrome !== "undefined" && chrome.storage?.onChanged) {
+  chrome.storage.onChanged.addListener((changes) => {
+    if (changes.baseUrl) {
+      currentBaseUrl = changes.baseUrl.newValue ?? DEFAULT_BASE_URL;
+      connectEvents();
+    }
+  });
+}
 
 void boot();
